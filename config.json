@@ -1,0 +1,48 @@
+{
+    "dataset_schema": {
+        "oxides": [
+            "SiO2",
+            "P2O5",
+            "B2O3",
+            "Al2O3",
+            "CaO",
+            "MgO",
+            "BaO",
+            "ZnO",
+            "SnO2",
+            "PbO",
+            "ZrO2",
+            "Li2O",
+            "Na2O",
+            "K2O",
+            "TiO2"
+        ],
+        "experimental_parameters": [
+            "Tg",
+            "ion exchange time(min)",
+            "E field strength (v/cm)",
+            "ion exchange temperature ( \u00b0c)",
+            "DOL (\u03bcm)",
+            "CS(Mpa)"
+        ],
+        "categorical_parameters": [
+            "GS(wt%)",
+            "exchanging ion",
+            "exchange side (tin or air)",
+            "E-field",
+            "refrence DOI"
+        ],
+        "pipeline_flags": [
+            "trace",
+            "trace_notes",
+            "is_standard_process",
+            "reported_unit"
+        ]
+    },
+    "validation_limits": {
+        "mass_balance_min": 98.0,
+        "mass_balance_max": 102.0,
+        "CS_Mpa_max": 2000,
+        "DOL_um_max": 500
+    }
+}

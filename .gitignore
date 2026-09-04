@@ -1,0 +1,9 @@
+.env# Environment variables (keeps your API key safe)
+.env
+
+# Virtual environment
+.venv/
+venv/
+
+# Local database and raw/processed PDFs
+data/

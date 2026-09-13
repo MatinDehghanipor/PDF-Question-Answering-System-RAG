@@ -11,3 +11,5 @@ data/
 # Prompt files
 prompt.txt
 docs/implementation_prompts.md
+
+.clinerules

@@ -8,6 +8,13 @@ python-dotenv==1.0.1
 python-multipart==0.0.19
 email-validator==2.2.0
 
+# Auth (Phase 1 — JWT pattern per SDD §3)
+# NOTE: bcrypt is pinned to 4.0.1 because passlib 1.7.4 is not compatible
+# with bcrypt >= 4.1 (the __about__ module was removed).
+passlib[bcrypt]==1.7.4
+bcrypt==4.0.1
+python-jose[cryptography]==3.3.0
+
 # Testing (informal in every phase, formal suite in Phase 13)
 pytest==8.3.4
 httpx==0.28.1

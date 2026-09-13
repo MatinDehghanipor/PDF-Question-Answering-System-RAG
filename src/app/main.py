@@ -114,7 +114,12 @@ async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONR
 
 @app.exception_handler(StarletteHTTPException)
 async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-    """Return a consistent JSON body for HTTP exceptions (404 unknown routes etc.)."""
+    """Return a consistent JSON body for HTTP exceptions (404 unknown routes etc.).
+
+    Preserves any headers attached to the exception — most importantly the
+    ``WWW-Authenticate: Bearer`` challenge FastAPI sets on 401 responses from
+    the JWT authentication dependency (Phase 1 / FR-2 / NFR-20).
+    """
     if exc.status_code == 404:
         return JSONResponse(
             status_code=404,
@@ -123,9 +128,11 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
                 "detail": f"Route '{request.url.path}' not found.",
             },
         )
+    headers = exc.headers if isinstance(exc.headers, dict) else None
     return JSONResponse(
         status_code=exc.status_code,
         content={"error": "http_error", "detail": str(exc.detail)},
+        headers=headers,
     )
 
 

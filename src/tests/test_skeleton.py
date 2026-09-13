@@ -42,11 +42,22 @@ def test_unknown_route_returns_json_404() -> None:
     assert body["error"] == "not_found"
 
 
-def test_stub_registration_returns_token() -> None:
-    """Auth register stub accepts the final request shape and returns a token."""
+def test_stub_registration_returns_created_user() -> None:
+    """Auth register (Phase 1) accepts the final request shape and returns the user."""
+    import uuid
+
+    username = f"skeleton_{uuid.uuid4().hex[:8]}"
+    email = f"{username}@example.com"
     response = client.post(
         "/auth/register",
-        json={"username": "alice", "email": "alice@example.com", "password": "password123"},
+        json={
+            "username": username,
+            "email": email,
+            "password": "password123",
+        },
     )
-    assert response.status_code == 200
-    assert "access_token" in response.json()
+    assert response.status_code == 201
+    body = response.json()
+    assert "id" in body
+    assert "username" in body
+    assert "email" in body

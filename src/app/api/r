@@ -1,9 +1,16 @@
-"""Query API routes (Phase 0 stubs).
+"""Query API routes (Phase 0 stubs wired for auth in Phase 1).
 
 Implements the "Backend API / Orchestrator" query endpoints (SDD §4).
 POST /query is the core QA endpoint supporting both RAG Mode (retrieval +
 LLM answer, Phase 7) and Raw Mode (LLM sees the original PDF directly,
-Phase 8).
+Phase 8).  Real orchestration arrives in Phases 7/8, but authentication is
+already wired in so later phases never have to retrofit it.
+
+STANDING RULE (applies to every route file from Phase 1 onward): every
+database query that reads or writes user-owned data (Document/Page/Chunk/
+Query/Answer/Feedback/TokenUsage) MUST filter by the current user's id, e.g.
+``db.query(Query).filter(Query.user_id == current_user.id, ...)``, so
+FR-3 / NFR-21 (per-user isolation) is always enforced at the query layer.
 """
 
 from fastapi import APIRouter, Depends
@@ -18,25 +25,30 @@ from app.schemas.query import QueryCreate
 router = APIRouter(prefix="/query", tags=["query"])
 
 
-@router.post("/", response_model=AnswerOut)
+@router.post("", response_model=AnswerOut)
 def ask_question(
     body: QueryCreate,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> AnswerOut:
-    """Answer a natural-language question in RAG or Raw Mode.
+    """Answer a natural-language question in RAG or Raw Mode (FR-24/FR-26 — Phases 7/8).
 
-    Realizes FR-24 (RAG Mode) and FR-26 (Raw Mode) — see Phases 7 and 8.
+    Requires authentication (NFR-20).  Phase 7/8 must create the Query row
+    with ``user_id=current_user.id`` and scope vector search / document access
+    to the current user so one user can never query another user's documents
+    (FR-3).
 
     Args:
         body: The question, mode, and optional k_value override.
         db: Database session (unused by the stub).
+        current_user: The authenticated user who owns the query.
 
     Returns:
         A stub answer marked as fake.
     """
     # TODO(Phase 7/8): orchestrate embedding + vector search (RAG) or direct
-    # LLM call (Raw), record Query + Answer + TokenUsage rows.
+    # LLM call (Raw), record Query + Answer + TokenUsage rows all scoped to
+    # current_user.id.
     return AnswerOut(
         id=1,
         query_id=1,

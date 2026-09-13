@@ -7,3 +7,7 @@ venv/
 
 # Local database and raw/processed PDFs
 data/
+
+# Prompt files
+prompt.txt
+docs/implementation_prompts.md

@@ -1,9 +1,11 @@
-"""Document management API routes (Phase 0 stubs wired for auth in Phase 1).
+"""Document management API routes — real implementation (Phase 2).
 
 Implements the "Backend API / Orchestrator" document endpoints (SDD §4):
-upload, list, and delete PDFs.  Real file storage + PDF splitting arrive in
-Phase 2; these endpoints still return stub payloads, but authentication is
-already wired in so Phase 2 never has to retrofit it.
+upload, list, detail, and delete PDFs.  Every endpoint requires authentication
+and scopes database queries to the current user (FR-3 / NFR-21).
+
+See Phase 2 implementation instructions for full details on the upload flow,
+validation, page-level ingestion orchestration, and aggregate status logic.
 
 STANDING RULE (applies to every route file from Phase 1 onward): every
 database query that reads or writes user-owned data (Document/Page/Chunk/
@@ -12,47 +14,174 @@ Query/Answer/Feedback/TokenUsage) MUST filter by the current user's id, e.g.
 FR-3 / NFR-21 (per-user isolation) is always enforced at the query layer.
 """
 
-from datetime import datetime
+import logging
 
-from fastapi import APIRouter, Depends, File, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.document import Document
-from app.models.enums import DocumentStatus
+from app.models.enums import DocumentStatus, PageStatus
 from app.models.user import User
-from app.schemas.document import DocumentDeleteResponse, DocumentList, DocumentOut
+from app.schemas.document import (
+    BatchUploadResponse,
+    DocumentDeleteResponse,
+    DocumentDetailOut,
+    DocumentList,
+    DocumentOut,
+    DocumentUploadError,
+    PageSummary,
+)
+from app.services.ingestion_orchestrator import process_uploaded_pdf
+from app.utils.pdf_utils import (
+    PdfProcessingError,
+    PdfValidationError,
+    ensure_storage_path,
+    validate_pdf_file,
+)
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
 
-@router.post("", response_model=DocumentOut, status_code=201)
-def upload_document(
-    file: UploadFile = File(...),
+def _compute_aggregate_status(doc: Document) -> DocumentStatus:
+    """Compute a document's aggregate status from its pages (FR-22)."""
+    if doc.status == DocumentStatus.DISCARDED:
+        return DocumentStatus.DISCARDED
+    if doc.status == DocumentStatus.FAILED:
+        return DocumentStatus.FAILED
+
+    pages = doc.pages or []
+    if not pages:
+        return DocumentStatus.UPLOADED
+
+    page_statuses = {p.status for p in pages}
+
+    if PageStatus.INITIAL_PROCESSING in page_statuses:
+        return DocumentStatus.PROCESSING
+    if PageStatus.LLM_REVIEW in page_statuses:
+        return DocumentStatus.AWAITING_FEEDBACK
+    if PageStatus.AWAITING_FEEDBACK in page_statuses:
+        return DocumentStatus.AWAITING_FEEDBACK
+    if all(p.status == PageStatus.APPROVED for p in pages):
+        return DocumentStatus.READY
+
+    return DocumentStatus.UPLOADED
+
+
+def _document_to_out(doc: Document) -> DocumentOut:
+    """Convert a Document ORM object to DocumentOut with aggregate status."""
+    return DocumentOut(
+        id=doc.id,
+        user_id=doc.user_id,
+        filename=doc.filename,
+        upload_date=doc.upload_date,
+        status=_compute_aggregate_status(doc),
+        page_count=doc.page_count,
+    )
+
+
+def _get_user_document_or_404(
+    db: Session, document_id: int, current_user: User
+) -> Document:
+    """Fetch a document by id, verifying ownership to current_user."""
+    doc = (
+        db.query(Document)
+        .filter(Document.id == document_id, Document.user_id == current_user.id)
+        .first()
+    )
+    if doc is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document {document_id} not found or not owned by you.",
+        )
+    return doc
+
+
+# ---------------------------------------------------------------------------
+# POST /documents — Upload one or more PDFs (FR-4, FR-5)
+# ---------------------------------------------------------------------------
+
+
+@router.post("", response_model=BatchUploadResponse, status_code=status.HTTP_201_CREATED)
+def upload_documents(
+    files: list[UploadFile] = File(..., description="One or more PDF files to upload"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
-) -> DocumentOut:
-    """Upload a PDF file for ingestion (FR-4 — Phase 2).
+) -> BatchUploadResponse:
+    """Upload one or more PDF files for ingestion (FR-4, FR-5).
 
-    Requires authentication (NFR-20): the stub returns a document record owned
-    by ``current_user``, demonstrating that the resolved user is available
-    inside the endpoint and that any real Phase-2 query will be scoped by
-    ``current_user.id`` (NFR-21).
+    Validates each file (type, size, magic bytes), saves it to disk, creates
+    a Document row, and runs the per-page ingestion pipeline (synchronously).
+
+    Per the OD-8 default, each upload creates an independent Document row even
+    if the filename matches an existing document.
+
+    A single bad file does not fail the whole batch (NFR-14 spirit).
 
     Args:
-        file: The uploaded PDF file.
-        db: Database session (unused by the stub).
-        current_user: The authenticated user (JWT-derived).
+        files: One or more PDF files (multipart upload).
+        db: Database session.
+        current_user: The authenticated user.
 
     Returns:
-        A stub document record owned by the current user.
+        A BatchUploadResponse with successfully created documents and any
+        per-file errors.
     """
-    # TODO(Phase 2): validate size/type, persist to PDF File Storage, create
-    # a Document row, and kick off page-level ingestion.
-    return DocumentOut(id=1, user_id=current_user.id, filename=file.filename or "fake.pdf",
-                       upload_date=datetime.utcnow(), status=DocumentStatus.UPLOADED,
-                       page_count=None)
+    created_documents: list[Document] = []
+    errors: list[DocumentUploadError] = []
+
+    for uploaded_file in files:
+        filename = uploaded_file.filename or "unnamed"
+
+        try:
+            file_bytes = uploaded_file.file.read()
+            if not file_bytes:
+                raise PdfValidationError("Empty file.")
+
+            validate_pdf_file(filename, file_bytes)
+
+            document = Document(
+                user_id=current_user.id,
+                filename=filename,
+                status=DocumentStatus.UPLOADED,
+            )
+            db.add(document)
+            db.flush()
+
+            storage_path = ensure_storage_path(current_user.id, document.id)
+            storage_path.write_bytes(file_bytes)
+            logger.info("Saved '%s' for user %d at '%s'.", filename, current_user.id, storage_path)
+
+            process_uploaded_pdf(db, document, str(storage_path))
+            db.commit()
+            created_documents.append(document)
+
+            logger.info("Document %d ('%s') uploaded and processed.", document.id, filename)
+
+        except (PdfValidationError, PdfProcessingError) as exc:
+            db.rollback()
+            logger.warning("Failed '%s': %s", filename, exc)
+            errors.append(DocumentUploadError(filename=filename, error=str(exc)))
+        except Exception as exc:
+            db.rollback()
+            logger.exception("Unexpected error '%s'.", filename)
+            errors.append(
+                DocumentUploadError(
+                    filename=filename,
+                    error=f"Internal server error: {exc}" if settings.DEBUG else "Internal server error.",
+                )
+            )
+        finally:
+            uploaded_file.file.close()
+
+    return BatchUploadResponse(
+        documents=[_document_to_out(d) for d in created_documents],
+        errors=errors,
+    )
 
 
 @router.get("", response_model=DocumentList)
@@ -62,26 +191,73 @@ def list_documents(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentList:
-    """List the current user's documents (FR-5, per-user isolation NFR-21).
+    """List the current user's documents with aggregate status (FR-22).
 
-    Requires authentication.  Even though real uploads arrive in Phase 2, the
-    query is already scoped to ``current_user.id`` so two users can never see
-    each other's documents (FR-3).
+    The returned status for each document is computed from the per-page
+    statuses using _compute_aggregate_status (FR-22 precedence order).
 
     Args:
         skip: Pagination offset.
         limit: Pagination page size.
         db: Database session.
-        current_user: The authenticated user whose documents are returned.
+        current_user: The authenticated user.
 
     Returns:
-        A paginated list of the current user's documents (empty until Phase 2
-        adds real uploads).
+        A paginated list of the current user's documents.
     """
     query = db.query(Document).filter(Document.user_id == current_user.id)
     total = query.count()
     items = query.order_by(Document.upload_date.desc()).offset(skip).limit(limit).all()
-    return DocumentList(items=items, total=total)
+
+    return DocumentList(
+        items=[_document_to_out(d) for d in items],
+        total=total,
+    )
+
+
+@router.get("/{document_id}", response_model=DocumentDetailOut)
+def get_document(
+    document_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> DocumentDetailOut:
+    """Get full detail for a single document, including per-page statuses (FR-22).
+
+    Args:
+        document_id: ID of the document to retrieve.
+        db: Database session.
+        current_user: The authenticated user.
+
+    Returns:
+        Full document detail with nested page statuses.
+
+    Raises:
+        HTTPException: 404 if document not found or not owned by current user.
+    """
+    doc = _get_user_document_or_404(db, document_id, current_user)
+
+    pages: list[PageSummary] = []
+    for p in doc.pages or []:
+        pages.append(
+            PageSummary(
+                id=p.id,
+                page_number=p.page_number,
+                status=p.status.value,
+                extraction_method=p.extraction_method.value if p.extraction_method else None,
+                quality_score=p.quality_score,
+                review_round=p.review_round,
+            )
+        )
+
+    return DocumentDetailOut(
+        id=doc.id,
+        user_id=doc.user_id,
+        filename=doc.filename,
+        upload_date=doc.upload_date,
+        status=_compute_aggregate_status(doc),
+        page_count=doc.page_count,
+        pages=pages,
+    )
 
 
 @router.delete("/{document_id}", response_model=DocumentDeleteResponse)
@@ -90,21 +266,37 @@ def delete_document(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentDeleteResponse:
-    """Delete an uploaded PDF (and all its derived data) (FR-23 — Phase 2).
+    """Delete a previously uploaded document and all its derived data (FR-23).
 
-    Requires authentication (NFR-20).  Phase 2 must additionally verify the
-    document belongs to ``current_user`` (``Document.user_id == current_user.id``)
-    before deleting, so one user cannot delete another user's document (FR-3).
+    Removes:
+        - The PDF file from disk (NFR-22).
+        - All database rows (Document, Pages, Chunks cascade-deleted via FK).
 
     Args:
         document_id: ID of the document to delete.
-        db: Database session (unused by the stub).
-        current_user: The authenticated user (ownership check target).
+        db: Database session.
+        current_user: The authenticated user.
 
     Returns:
-        A stub deletion confirmation.
+        A confirmation response with deleted=True.
+
+    Raises:
+        HTTPException: 404 if document not found or not owned by current user.
     """
-    # TODO(Phase 2): verify ownership (Document.user_id == current_user.id),
-    # remove the file from PDF File Storage, and cascade-delete
-    # Document / Page / Chunk / Embedding rows (SQLite FK pragma is already ON).
+    doc = _get_user_document_or_404(db, document_id, current_user)
+
+    storage_path = ensure_storage_path(current_user.id, document_id)
+    if storage_path.exists():
+        try:
+            storage_path.unlink()
+            logger.info("Deleted PDF file at '%s'.", storage_path)
+        except OSError as exc:
+            logger.warning("Could not delete file '%s': %s", storage_path, exc)
+    else:
+        logger.warning("File '%s' for document %d was already missing.", storage_path, document_id)
+
+    db.delete(doc)
+    db.commit()
+
+    logger.info("Document %d deleted for user %d.", document_id, current_user.id)
     return DocumentDeleteResponse(deleted=True, document_id=document_id)

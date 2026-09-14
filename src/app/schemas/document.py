@@ -13,7 +13,7 @@ from app.models.enums import DocumentStatus
 
 
 class DocumentOut(BaseModel):
-    """Public representation of a document."""
+    """Public representation of a document (list view)."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -23,6 +23,33 @@ class DocumentOut(BaseModel):
     upload_date: datetime
     status: DocumentStatus
     page_count: int | None = None
+
+
+class PageSummary(BaseModel):
+    """Lightweight page representation included in document detail responses."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    page_number: int
+    status: str
+    extraction_method: str | None = None
+    quality_score: float | None = None
+    review_round: int
+
+
+class DocumentDetailOut(BaseModel):
+    """Full document detail including per-page statuses."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    user_id: int
+    filename: str
+    upload_date: datetime
+    status: DocumentStatus
+    page_count: int | None = None
+    pages: list[PageSummary] = []
 
 
 class DocumentList(BaseModel):
@@ -37,3 +64,17 @@ class DocumentDeleteResponse(BaseModel):
 
     deleted: bool
     document_id: int
+
+
+class DocumentUploadError(BaseModel):
+    """Error details for a single file in a batch upload."""
+
+    filename: str
+    error: str
+
+
+class BatchUploadResponse(BaseModel):
+    """Response body for POST /documents with one or more files."""
+
+    documents: list[DocumentOut]
+    errors: list[DocumentUploadError] = []

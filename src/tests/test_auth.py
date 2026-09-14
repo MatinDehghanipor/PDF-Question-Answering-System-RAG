@@ -31,6 +31,17 @@ client = TestClient(app)
 _RUN_SUFFIX = uuid.uuid4().hex[:8]
 
 
+def _make_tiny_pdf() -> bytes:
+    """Create a minimal 1-page PDF for upload tests."""
+    import fitz, io
+    doc = fitz.open()
+    doc.new_page()
+    buf = io.BytesIO()
+    doc.save(buf)
+    doc.close()
+    return buf.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # Registration (FR-1, NFR-20)
 # ---------------------------------------------------------------------------
@@ -278,22 +289,24 @@ def test_valid_token_resolves_current_user_and_isolates_documents() -> None:
 
     # The upload stub echoes current_user.id from the JWT, proving the resolved.
     # user is available inside the endpoint (NFR-21 ownership scoping).
+    tiny_pdf = _make_tiny_pdf()
+
     upload_a = client.post(
         "/documents",
-        files={"file": ("a.pdf", b"%PDF-fake", "application/pdf")},
+        files={"files": ("a.pdf", tiny_pdf, "application/pdf")},
         headers={"Authorization": f"Bearer {token_a}"},
     )
     assert upload_a.status_code == 201
-    assert upload_a.json()["user_id"] == id_a
+    assert upload_a.json()["documents"][0]["user_id"] == id_a
 
     upload_b = client.post(
         "/documents",
-        files={"file": ("b.pdf", b"%PDF-fake", "application/pdf")},
+        files={"files": ("b.pdf", tiny_pdf, "application/pdf")},
         headers={"Authorization": f"Bearer {token_b}"},
     )
     assert upload_b.status_code == 201
-    assert upload_b.json()["user_id"] == id_b
-    assert upload_a.json()["user_id"] != upload_b.json()["user_id"]
+    assert upload_b.json()["documents"][0]["user_id"] == id_b
+    assert upload_a.json()["documents"][0]["user_id"] != upload_b.json()["documents"][0]["user_id"]
 
     # Each user's document list is scoped to themselves (no cross-user leak).
     resp_a = client.get(
@@ -306,7 +319,10 @@ def test_valid_token_resolves_current_user_and_isolates_documents() -> None:
     )
     assert resp_a.status_code == 200
     assert resp_b.status_code == 200
-    # No real documents exist yet, so each user sees an empty list; the key
-    # assertion is that both requests succeed as valid per-user reads.
-    assert resp_a.json()["total"] == 0
-    assert resp_b.json()["total"] == 0
+    # Each user uploaded one real PDF via the new endpoint, so each sees
+    # exactly one document.  The key assertion is cross-user isolation:
+    # user A does NOT see user B's document.
+    assert resp_a.json()["total"] == 1
+    assert resp_b.json()["total"] == 1
+    assert resp_a.json()["items"][0]["filename"] == "a.pdf"
+    assert resp_b.json()["items"][0]["filename"] == "b.pdf"

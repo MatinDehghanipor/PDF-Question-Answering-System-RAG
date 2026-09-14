@@ -13,6 +13,7 @@ new ad-hoc settings, so the whole system stays configurable from one place.
 
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Project root is two levels above this file (app/core/config.py -> project root)
@@ -82,6 +83,20 @@ class Settings(BaseSettings):
 
     # --- File storage ---
     FILE_STORAGE_PATH: str = "./data/pdfs"
+
+    @field_validator("DEBUG", mode="before")
+    @classmethod
+    def coerce_debug(cls, v: object) -> bool | object:
+        """Coerce DEBUG to a proper boolean.
+
+        Pydantic's strict bool parsing rejects non-boolean strings like
+        ``"release"`` (which can leak from the system environment).  This
+        validator accepts truthy/falsy strings so the app never crashes on
+        startup due to a stray environment variable.
+        """
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes", "on")
+        return v
 
 
 settings = Settings()

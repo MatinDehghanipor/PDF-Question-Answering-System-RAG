@@ -74,6 +74,7 @@ def split_and_index_page(db: Session, page: Page, user_id: int) -> None:
                     embed_inputs.append(sc["text"])
                     metadata_list.append({
                         "document_id": doc.id,
+                        "document_filename": doc.filename,
                         "page_id": page.id,
                         "chunk_type": "text",
                         "reading_order": sc["reading_order"],
@@ -95,6 +96,7 @@ def split_and_index_page(db: Session, page: Page, user_id: int) -> None:
         embed_inputs.append(text)
         metadata_list.append({
             "document_id": doc.id,
+            "document_filename": doc.filename,
             "page_id": page.id,
             "chunk_type": c.chunk_type.value,
             "reading_order": c.reading_order,

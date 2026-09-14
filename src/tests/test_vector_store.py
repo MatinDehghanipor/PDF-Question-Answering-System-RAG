@@ -251,3 +251,97 @@ class TestPerUserIsolation:
         assert "a_only" not in result_b["ids"]
         assert "User A data" not in result_b["documents"]
         
+class TestTopKSearch:
+    """``top_k_search`` queries by vector similarity."""
+
+    def _cleanup(self, user_id):
+        try:
+            from app.services.vector_store import get_user_collection
+            coll = get_user_collection(user_id)
+            existing = coll.get()
+            if existing["ids"]:
+                coll.delete(ids=existing["ids"])
+        except Exception:
+            pass
+
+    def test_top_k_returns_expected_shape(self, _ensure_vector_dir):
+        from app.services.vector_store import top_k_search, upsert_chunks, get_user_collection
+
+        uid = 9201
+        self._cleanup(uid)
+
+        # Insert two chunks with known embeddings
+        upsert_chunks(
+            uid,
+            ["tk_1", "tk_2"],
+            [[0.1] * 384, [0.9] * 384],  # first is closer to query [0.1]*384
+            ["Apple banana", "Zebra yak"],
+            [{"document_id": 1}, {"document_id": 1}],
+        )
+
+        # Query with vector close to [0.1]*384
+        query_vec = [0.1] * 384
+        results = top_k_search(uid, query_vec, k=5)
+
+        assert len(results) >= 1
+        for r in results:
+            assert "chunk_id" in r
+            assert "document" in r
+            assert "metadata" in r
+            assert "distance" in r
+
+    def test_top_k_returns_closest_first(self, _ensure_vector_dir):
+        from app.services.vector_store import top_k_search, upsert_chunks, get_user_collection
+
+        uid = 9202
+        self._cleanup(uid)
+
+        # Insert chunks: second is closer to query
+        upsert_chunks(
+            uid,
+            ["far", "close"],
+            [[0.9] * 384, [0.1] * 384],
+            ["Far chunk", "Close chunk"],
+            [{}, {}],
+        )
+
+        query_vec = [0.1] * 384
+        results = top_k_search(uid, query_vec, k=2)
+
+        assert len(results) == 2
+        # "close" (distance near 0) should be first
+        assert results[0]["chunk_id"] == "close"
+        assert results[0]["distance"] <= results[1]["distance"]
+
+    def test_top_k_returns_fewer_than_k_when_not_enough_chunks(self, _ensure_vector_dir):
+        from app.services.vector_store import top_k_search, upsert_chunks
+
+        uid = 9203
+        self._cleanup(uid)
+
+        upsert_chunks(uid, ["only_one"], [[0.5] * 384], ["Solo"], [{}])
+
+        query_vec = [0.5] * 384
+        results = top_k_search(uid, query_vec, k=10)
+        assert len(results) == 1
+
+    def test_top_k_respects_user_isolation(self, _ensure_vector_dir):
+        from app.services.vector_store import top_k_search, upsert_chunks
+
+        uid_a = 9204
+        uid_b = 9205
+        self._cleanup(uid_a)
+        self._cleanup(uid_b)
+
+        upsert_chunks(uid_a, ["a_only"], [[0.1] * 384], ["User A"], [{}])
+        upsert_chunks(uid_b, ["b_only"], [[0.9] * 384], ["User B"], [{}])
+
+        query_vec = [0.1] * 384
+        results_a = top_k_search(uid_a, query_vec, k=5)
+        results_b = top_k_search(uid_b, query_vec, k=5)
+
+        # A sees its own, B sees its own
+        assert any("User A" in r["document"] for r in results_a)
+        assert all("User B" not in r["document"] for r in results_a)
+        assert any("User B" in r["document"] for r in results_b)
+        assert all("User A" not in r["document"] for r in results_b)

@@ -101,3 +101,50 @@ def delete_chunks_by_ids(user_id: int, chunk_ids: list[str]) -> None:
         logger.debug("Deleted %d chunk vectors for user %d.", len(chunk_ids), user_id)
     except Exception as exc:
         logger.warning("Error deleting chunk vectors: %s", exc)
+
+
+def top_k_search(
+    user_id: int, query_vector: list[float], k: int
+) -> list[dict]:
+    """Execute top-k similarity search on the user's collection (FR-25).
+
+    Chroma's default cosine distance is used (lower distance = more similar).
+
+    Args:
+        user_id: The user whose collection to search.
+        query_vector: Embedding vector for the query (must be from the SAME
+            embedding model used to index chunks — see embedding_service.py).
+        k: Maximum number of nearest neighbors to retrieve.
+
+    Returns:
+        List of dicts with keys: ``chunk_id``, ``document`` (text),
+        ``metadata`` (dict), and ``distance`` (float, lower = more similar).
+        Fewer than *k* results is not an error — Chroma simply returns what
+        it has.
+
+    Note:
+        Chroma returns distances in the same space as the collection was
+        configured with (``hnsw:space: cosine``), so distance values are
+        cosine distances in [0, 2] where 0 = identical, 1 = orthogonal.
+    """
+    coll = get_user_collection(user_id)
+    results = coll.query(
+        query_embeddings=[query_vector],
+        n_results=k,
+        include=["documents", "metadatas", "distances"],
+    )
+    # Chroma returns lists-of-lists (one per query); we only have one query.
+    ids = results.get("ids", [[]])[0]
+    documents = results.get("documents", [[]])[0]
+    metadatas = results.get("metadatas", [[]])[0]
+    distances = results.get("distances", [[]])[0]
+
+    output: list[dict] = []
+    for i in range(len(ids)):
+        output.append({
+            "chunk_id": ids[i],
+            "document": documents[i] if documents else "",
+            "metadata": metadatas[i] if metadatas else {},
+            "distance": distances[i] if distances else 0.0,
+        })
+    return output

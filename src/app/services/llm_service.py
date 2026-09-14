@@ -31,6 +31,30 @@ from app.services.token_tracker import record_token_usage, estimate_tokens
 
 logger = logging.getLogger(__name__)
 
+# [WORKING DEFAULT — OD-10]: RAG answer-grounding prompt template.
+# {formatted_chunks} and {query_text} are substituted at query time.
+# MAX_TOP_K=20 plus ~500-token chunks keeps the total well within typical
+# LLM context windows — if a larger k or longer chunks are ever configured,
+# dynamic truncation should be added here (flagged for Phase 10+).
+RAG_PROMPT_TEMPLATE = """You are answering a user's question using ONLY the reference excerpts
+below, which come from the user's own uploaded documents. If the excerpts do not
+contain enough information to answer confidently, say so explicitly rather than
+guessing or using outside knowledge.
+
+Reference excerpts (grouped by source document, in reading order):
+{formatted_chunks}
+
+User's question: {query_text}
+
+Instructions:
+- Ground every claim in the excerpts above; do not introduce facts that are not
+  present in them.
+- When you use information from an excerpt, note which document/page it came from
+  inline (e.g., '(Document: report.pdf, page 3)').
+- If different excerpts conflict, point out the conflict rather than silently
+  picking one.
+- Answer in the same language the user asked the question in."""
+
 # [WORKING DEFAULT — OD-11]: Structured-JSON prompt for LLM Review.
 # {optional_note_block} is substituted with the user's review_note (OD-14).
 LLM_REVIEW_PROMPT_TEMPLATE = """You are extracting structured content from a single scanned/rendered page image. Return ONLY valid JSON (no prose, no Markdown fences) matching this schema:
@@ -142,6 +166,60 @@ def call_vision_llm(image_bytes: bytes, prompt: str, model: str) -> LLMCallResul
 
     try:
         response = client.models.generate_content(model=model, contents=[prompt, image_data_uri])
+    except Exception as exc:
+        raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+
+    text = response.text or ""
+    pt = None
+    ct = None
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        pt = getattr(response.usage_metadata, "prompt_token_count", None)
+        ct = getattr(response.usage_metadata, "candidates_token_count", None)
+
+    return LLMCallResult(text=text, prompt_tokens=pt, completion_tokens=ct)
+
+
+def call_text_llm(prompt: str, model: str) -> LLMCallResult:
+    """Send a text-only prompt to a generation LLM (FR-27, FR-33).
+
+    Uses the same Google Generative AI SDK and API key as ``call_vision_llm``
+    but without an image payload.  Token usage is read from the API response's
+    ``usage_metadata`` field when available.
+
+    Note:
+        This project uses a **local** embedding model (``all-MiniLM-L6-v2``
+        via sentence-transformers), so no embedding-token billing applies.
+        If the embedding model is ever swapped for an API-based one (SDD §3
+        notes), ``embedding_tokens`` recording would need adding here and
+        in ``retrieval_service.py``.  Currently only prompt/completion tokens
+        from the answering LLM call are recorded (per FR-33's "where applicable"
+        clause).
+
+    Args:
+        prompt: The full prompt string (e.g. built by ``build_rag_prompt``).
+        model: Model identifier (e.g. ``gemini-2.0-flash`` from
+            ``settings.LLM_ANSWER_MODEL``).
+
+    Returns:
+        LLMCallResult with response text and token counts.
+
+    Raises:
+        RuntimeError: If the API call fails or API key is missing.
+    """
+    try:
+        import google.genai as genai
+    except ImportError:
+        raise RuntimeError("google-generativeai SDK not installed. Install via: pip install google-generativeai")
+
+    import os
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY environment variable not set.")
+
+    client = genai.Client(api_key=api_key)
+
+    try:
+        response = client.models.generate_content(model=model, contents=[prompt])
     except Exception as exc:
         raise RuntimeError(f"Gemini API call failed: {exc}") from exc
 

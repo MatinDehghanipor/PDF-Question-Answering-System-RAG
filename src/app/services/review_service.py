@@ -24,8 +24,9 @@ from app.models.enums import (
     PageStatus,
 )
 from app.models.page import Page
+from app.services.chunker import split_and_index_page
 from app.services.llm_service import trigger_llm_review
-from app.services.chunker import remove_embeddings_for_document
+from app.services.vector_store import delete_chunks_for_document
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +50,7 @@ def approve_page(page: Page, db: Session) -> None:
     page.status = PageStatus.APPROVED
     page.updated_at = now
     db.flush()
-    _stub_enqueue_for_indexing(page.id)
+    _index_page_and_update_status(page, db)
 def mark_unsatisfied(page: Page, db: Session, note: str | None = None) -> None:
     """Mark a page unsatisfactory — Round 1 escalates, Round 2 discards document."""
     if page.status != PageStatus.AWAITING_FEEDBACK:
@@ -80,7 +81,10 @@ def discard_document(db: Session, document_id: int) -> None:
         raise ValueError(f"Document {document_id} is already discarded.")
 
     logger.info("Discarding document %d (user=%d).", doc.id, doc.user_id)
-    remove_embeddings_for_document(document_id)
+    # Phase 6: Remove vectors from Chroma BEFORE deleting SQL rows so that a
+    # failure in vector deletion can be safely retried without orphaning either
+    # side — the SQL rows still exist, so we know what to clean up next time.
+    delete_chunks_for_document(doc.user_id, doc.id)
 
     for p in list(doc.pages or []):
         db.query(Chunk).filter(Chunk.page_id == p.id).delete()
@@ -108,9 +112,24 @@ def approve_all_pending(document: Document, db: Session) -> int:
     return len(pending)
 
 
-def _stub_enqueue_for_indexing(page_id: int) -> None:
-    """Stub: enqueue page for embedding (Phase 6)."""
-    pass
+def _index_page_and_update_status(page: Page, db: Session) -> None:
+    """Index the approved page's chunks into Chroma, then update document status.
+
+    Phase 6 real implementation: delegates to ``split_and_index_page()`` from
+    the chunker service.  If indexing fails (embedding error, Chroma write
+    failure), the exception propagates up through ``approve_page()`` so the
+    caller's ``db.commit()`` is never reached — the transaction rolls back,
+    leaving the page's chunks in their pre-approval state.  This satisfies the
+    Phase 6 requirement that indexing succeeding is a precondition for the
+    final "Approved" status being persisted.
+    """
+    doc = page.document
+    try:
+        split_and_index_page(db, page, doc.user_id)
+    except Exception:
+        logger.error("Indexing failed for page %d — transaction will roll back.", page.id)
+        raise
+    _update_document_status_if_ready(doc, db)
 
 
 def _update_document_status_if_ready(document: Document, db: Session) -> None:

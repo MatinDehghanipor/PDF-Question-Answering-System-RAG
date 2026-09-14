@@ -30,8 +30,12 @@ def _validate_storage_paths() -> None:
     SQLite database directory and the PDF file-storage directory exist or
     can be created, logging a clear message before exiting otherwise.
 
+    Also validates the embedding model loads (Phase 6 / FR-21) and the vector
+    store path (Phase 6 / NFR-7) can be created.
+
     Raises:
-        RuntimeError: If a required path cannot be created.
+        RuntimeError: If a required path cannot be created or the embedding
+            model cannot be loaded.
     """
     # sqlite:///./data/app.db -> ./data
     db_url = settings.DATABASE_URL
@@ -54,10 +58,20 @@ def _validate_storage_paths() -> None:
             f"Cannot create FILE_STORAGE_PATH '{storage}': {exc}"
         ) from exc
 
+    # Phase 6: Vector store path must be writable (NFR-7 persistence).
+    vector_path = Path(settings.VECTOR_STORE_PATH)
+    try:
+        vector_path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Cannot create VECTOR_STORE_PATH '{vector_path}': {exc}"
+        ) from exc
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan: validate storage paths and check DB connectivity."""
+    """Application lifespan: validate storage paths, check DB connectivity, and
+    verify the embedding model loads (Phase 6 / FR-21)."""
     logger.info("Starting %s (env=%s)", settings.APP_NAME, settings.APP_ENV)
     _validate_storage_paths()
     try:
@@ -68,6 +82,18 @@ async def lifespan(app: FastAPI):
     except Exception as exc:  # pragma: no cover - defensive
         raise RuntimeError(
             f"Cannot connect to database at DATABASE_URL '{settings.DATABASE_URL}': {exc}"
+        ) from exc
+    # Phase 6: Validate the embedding model loads at startup (singleton cache).
+    # This ensures the model files exist / can be downloaded before any user
+    # request arrives — failing early rather than on the first embed call.
+    try:
+        from app.services.embedding_service import get_embedding_model
+        logger.info("Loading embedding model '%s'...", settings.EMBEDDING_MODEL_NAME)
+        get_embedding_model()
+        logger.info("Embedding model '%s' loaded.", settings.EMBEDDING_MODEL_NAME)
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to load embedding model '{settings.EMBEDDING_MODEL_NAME}': {exc}"
         ) from exc
     logger.info("Storage and database checks passed.")
     yield

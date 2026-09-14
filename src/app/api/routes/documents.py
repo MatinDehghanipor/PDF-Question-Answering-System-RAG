@@ -38,6 +38,7 @@ from app.schemas.document import (
 from app.schemas.page import PageWithChunksOut
 from app.services.ingestion_orchestrator import process_uploaded_pdf
 from app.services.review_service import approve_all_pending
+from app.services.vector_store import delete_chunks_for_document
 from app.utils.pdf_utils import (
     PdfProcessingError,
     PdfValidationError,
@@ -287,6 +288,11 @@ def delete_document(
         HTTPException: 404 if document not found or not owned by current user.
     """
     doc = _get_user_document_or_404(db, document_id, current_user)
+
+    # Phase 6: Remove vectors from Chroma BEFORE deleting DB rows so that a
+    # failure in vector deletion can be safely retried without orphaning either
+    # side — the SQL rows still exist, so we know what to clean up next time.
+    delete_chunks_for_document(current_user.id, document_id)
 
     storage_path = ensure_storage_path(current_user.id, document_id)
     if storage_path.exists():

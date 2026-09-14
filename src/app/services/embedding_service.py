@@ -1,12 +1,49 @@
-"""Embedding Service + Vector Index placeholder.
+"""Embedding Service — real implementation (Phase 6)."""
 
-Implements the "Embedding Service" and "Vector Index / Store" components
-(SDD §4): converts approved chunks and queries into vectors, persists them in
-a per-user-partitioned vector store, and serves top-k similarity search.
-Model name is configurable via ``settings.EMBEDDING_MODEL_NAME`` and store
-path via ``settings.VECTOR_STORE_PATH`` (NFR-25).  Real implementation is
-added in Phase 6 — no business logic yet.
-"""
+import logging
+import tiktoken
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from sentence_transformers import SentenceTransformer
+from app.core.config import settings
 
-# TODO(Phase 6): implement embed_texts(), index_chunk(), search_top_k()
-# using sentence-transformers + ChromaDB.
+logger = logging.getLogger(__name__)
+_model = None
+_ENC = "cl100k_base"
+
+
+def get_embedding_model():
+    global _model
+    if _model is None:
+        logger.info("Loading model '%s' ...", settings.EMBEDDING_MODEL_NAME)
+        try:
+            _model = SentenceTransformer(settings.EMBEDDING_MODEL_NAME)
+        except Exception as exc:
+            raise RuntimeError(f"Failed to load '{settings.EMBEDDING_MODEL_NAME}': {exc}") from exc
+    return _model
+
+
+def embed_texts(texts: list[str]) -> list[list[float]]:
+    if not texts:
+        return []
+    m = get_embedding_model()
+    return [e.tolist() for e in m.encode(texts, batch_size=32, show_progress_bar=False)]
+
+
+def _token_count(text: str) -> int:
+    try:
+        return len(tiktoken.get_encoding(_ENC).encode(text))
+    except Exception:
+        return len(text) // 4
+
+
+def should_split_chunk(text: str) -> bool:
+    return _token_count(text) > settings.CHUNK_SIZE_TOKENS
+
+
+def split_text_chunk(text: str, chunk_id: int, reading_order: int) -> list[dict]:
+    s = RecursiveCharacterTextSplitter(
+        chunk_size=settings.CHUNK_SIZE_TOKENS, chunk_overlap=settings.CHUNK_OVERLAP_TOKENS,
+        length_function=_token_count, separators=["\n\n", "\n", ".", " ", ""],
+    )
+    return [{"text": t, "reading_order": reading_order, "sub_index": i, "parent_chunk_id": chunk_id}
+            for i, t in enumerate(s.split_text(text))]

@@ -27,6 +27,11 @@ class Chunk(Base):
         image_caption: Caption for an image-type chunk (nullable).
         image_path: Filesystem path to an extracted image (nullable).
         reading_order: Order of this chunk within its page (for reconstruction).
+        sub_index: Sub-index for split text chunks (Phase 6).  When a ``text``
+            chunk exceeds ``CHUNK_SIZE_TOKENS``, it is split into N sub-chunks
+            each with the same ``reading_order`` and a distinct ``sub_index``
+            (0, 1, 2...).  Non-split chunks always have ``sub_index = 0``.
+            ``table`` and ``image`` chunks are NEVER split (OD-1 default).
         excluded: Flag set by the reviewer to exclude this chunk from indexing
             (Phase 4).  Once ``true``, the chunk gets ``review_status = rejected``
             upon the next page approval.
@@ -50,6 +55,7 @@ class Chunk(Base):
     image_caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     reading_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    sub_index: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     excluded: Mapped[bool] = mapped_column(sa.Boolean, default=False, nullable=False)
     review_status: Mapped[ChunkReviewStatus] = mapped_column(
         Enum(ChunkReviewStatus, values_callable=lambda e: [m.value for m in e]),

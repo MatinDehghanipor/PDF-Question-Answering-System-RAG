@@ -8,10 +8,9 @@ fallback, before chunking, embedding, and indexing. Users ask questions in
 sent to the LLM directly). Answers can be rated/commented, and every
 LLM-consuming operation is token-tracked.
 
-This repository currently implements **Phase 0 — Project Scaffolding & Full
-System Skeleton**: a runnable backend with the complete final API surface
-(stubbed), the full SDD §7 database schema, centralized configuration
-(NFR-25), and empty service modules for every SDD §4 component.
+This repository currently implements **Phase 3 — Native Extraction, Quality
+Scoring & OCR Fallback**: real extraction logic (PyMuPDF + Camelot for
+tables), a heuristic quality scorer, and Tesseract-based OCR fallback.
 
 ## Project Structure
 
@@ -37,7 +36,34 @@ src/
 
 ## Getting Started
 
-1. **Install dependencies** (Python 3.11+ recommended):
+1. **Install system dependencies**:
+
+   This project requires two system-level (non-Python) packages for PDF
+   extraction (Phase 3):
+
+   - **Ghostscript** (required by Camelot for table extraction):
+     - *Windows:* Download from https://www.ghostscript.com/releases/gsdnld.html
+       and ensure ``gswin64c`` (or ``gswin32c``) is on your ``PATH``.
+     - *Linux:* ``sudo apt install ghostscript`` (or your distro's equivalent).
+     - *macOS:* ``brew install ghostscript``.
+
+   - **Tesseract OCR** (required by pytesseract for OCR fallback):
+     - *Windows:* Download from https://github.com/UB-Mannheim/tesseract/wiki
+       and ensure ``tesseract.exe`` is on your ``PATH``.
+     - *Linux:* ``sudo apt install tesseract-ocr``.
+     - *macOS:* ``brew install tesseract``.
+     - For Persian/Arabic PDFs, also install the matching language pack
+       (e.g., ``tesseract-ocr-fas`` on Linux/macOS) and pass
+       ``lang="fas+eng"`` to the OCR function (see `ocr_extractor.py`).
+
+   Verify both are installed:
+
+   ```bash
+   gswin64c --version   # Windows; or `gs --version` on Linux/macOS
+   tesseract --version
+   ```
+
+2. **Install Python dependencies**:
 
    ```bash
    pip install -r requirements.txt
@@ -103,3 +129,18 @@ needed.
   - Dockerfile, .env.example, .gitignore, pytest smoke tests.
 
 *Later phases append one bullet per completed phase here.*
+
+- **Phase 3 (complete)** — Native Extraction, Quality Scoring & OCR Fallback:
+  - Real native extractor using PyMuPDF (text blocks, Camelot tables, embedded
+    images with captions).
+  - Heuristic quality scorer (OD-3 default: char density + garbled ratio).
+  - Real OCR extractor using Tesseract (300 DPI rendering, text + tables +
+    images).
+  - Shared `ExtractionResult` type (TextBlock, TableBlock, ImageBlock) used
+    by all extractors (SDD §2.2).
+  - Proximity-based image caption matcher (OD-4 default, no LLM).
+  - Per-block chunk creation in ingestion orchestrator.
+  - Error handling per NFR-14: single-page failures never abort the document.
+  - `ocr_failed` extraction method for Tesseract-unavailable pages.
+  - Updated dependencies (camelot-py, pytesseract, pandas, tabulate).
+  - System dependency docs (Ghostscript, Tesseract).

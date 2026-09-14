@@ -1,32 +1,26 @@
-"""Ingestion Orchestrator — per-page state machine for Phase 2.
+"""Ingestion Orchestrator — per-page state machine (Phase 3).
 
 Implements the core orchestration logic of the "Document and Page Registry"
 component (SDD §4): drives each page of an uploaded PDF through the initial
 extraction pipeline and lands it in the "Awaiting Feedback, Round 1" state
-with a placeholder chunk ready for human review.
+with real content chunks ready for human review.
 
-.. admonition:: Pipeline flow (SDD §5.1 — Phase 2 skeleton)
-
-    This module implements the **real orchestration skeleton**:
-
+Pipeline flow (SDD §5.1):
     A. Upload -> B. Validate -> D. Split -> E. For each page:
-        F. ``extract_native()`` (stub, Phase 3 real)
-        G. ``score_quality()`` (stub, Phase 3 real)
-        H. If score < threshold -> I. ``extract_ocr()`` (stub, Phase 3 real)
-        J. Set status = ``awaiting_feedback``, round 1
+        F. ``extract_native()`` — real native extraction (Phase 3)
+        G. ``score_quality()`` — real quality scoring (Phase 3)
+        H. If score < threshold -> I. ``extract_ocr()`` — real OCR (Phase 3)
+        J. Create typed Chunks per extracted block
+        K. Set status = ``awaiting_feedback``, round 1
 
-    The real content-extraction is still stubbed.  Real review/approve/reject
-    endpoints (K->W) arrive in Phase 4 and Phase 5.
-
-.. admonition:: FR-37 guard (OD-8 default)
-
-    ``reprocess_document()`` raises ``NotImplementedError``.  If true
-    re-upload/versioning is needed later, this is the single function to change.
+Per-page error handling realises NFR-14: a failure on one page never aborts
+the entire document's ingestion.
 """
 
 import logging
 from pathlib import Path
 
+import fitz  # PyMuPDF — used here to obtain page rect for quality scoring
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -40,7 +34,8 @@ from app.models.enums import (
     PageStatus,
 )
 from app.models.page import Page
-from app.services.native_extractor import ExtractionResult, extract_native
+from app.schemas.extraction_result import ExtractionResult
+from app.services.native_extractor import extract_native
 from app.services.ocr_extractor import extract_ocr
 from app.services.quality_scorer import score_quality
 
@@ -52,17 +47,20 @@ def _process_single_page(
     page: Page,
     pdf_path: str | Path,
 ) -> None:
-    """Run the per-page extraction pipeline (SDD 5.1 steps F->G->H->I->J).
+    """Run the per-page extraction pipeline (SDD 5.1 steps F->G->H->I->J->K).
 
-    1. Calls (stubbed) native extractor - F
-    2. Calls (stubbed) quality scorer - G
-    3. If quality below threshold, calls (stubbed) OCR extractor - H->I
-    4. Creates a placeholder Chunk row with stub content
-    5. Sets page status to awaiting_feedback, round 1 - J
+    1. Calls real native extractor — F
+    2. Calls real quality scorer with page rect — G
+    3. If quality below threshold, calls real OCR extractor — H->I
+    4. Creates typed Chunks per extracted text/table/image block — J
+    5. Sets page status to awaiting_feedback, round 1 — K
 
-    The quality-score branch (step 3) is genuine code.  In Phase 2 the stub
-    scorer always returns 1.0, so the OCR branch is never triggered, but it
-    is NOT dead code - Phase 3's real scorer will naturally trigger it.
+    Error handling (NFR-14):
+    - If native extraction raises, treat quality score as 0 → OCR fallback.
+    - If OCR extraction fails, set extraction_method to ``ocr_failed``.
+    - Per-block table/image failures are caught inside each extractor.
+    - A single page failure never aborts the document loop (caller's
+      responsibility — ``process_uploaded_pdf`` loops over pages).
 
     Args:
         db: SQLAlchemy session (transaction managed by caller).
@@ -72,46 +70,154 @@ def _process_single_page(
     page.status = PageStatus.INITIAL_PROCESSING
     db.flush()
 
-    # Step F: Native extraction (STUB - Phase 3)
-    native_result: ExtractionResult = extract_native(pdf_path, page.page_number)
+    # ── Step F: Native extraction ───────────────────────────────────
+    try:
+        native_result: ExtractionResult = extract_native(pdf_path, page.page_number)
+        native_ok = True
+    except Exception as exc:
+        logger.warning(
+            "Native extraction failed for page %d of '%s': %s — falling through to OCR.",
+            page.page_number, pdf_path, exc,
+        )
+        native_result = ExtractionResult()
+        native_ok = False
 
-    # Step G: Quality scoring (STUB - Phase 3)
-    quality_score: float = score_quality(native_result)
+    # ── Get page rect for quality scoring ───────────────────────────
+    page_rect = _get_page_rect(pdf_path, page.page_number)
+
+    # ── Step G: Quality scoring ─────────────────────────────────────
+    quality_score: float = score_quality(native_result, page_rect)
     page.quality_score = quality_score
 
-    # Step H->I: OCR fallback (branch exists, unreachable with stub)
-    if quality_score < settings.QUALITY_SCORE_THRESHOLD:
-        logger.info(
-            "Page %d quality score %.2f below threshold %.2f - OCR fallback.",
-            page.page_number, quality_score, settings.QUALITY_SCORE_THRESHOLD,
-        )
-        ocr_result: ExtractionResult = extract_ocr(pdf_path, page.page_number)
-        extraction_method = ExtractionMethod.OCR
-        final_result = ocr_result
+    # ── Steps H->I: OCR fallback ────────────────────────────────────
+    if not native_ok or quality_score < settings.QUALITY_SCORE_THRESHOLD:
+        if native_ok:
+            logger.info(
+                "Page %d quality score %.2f below threshold %.2f — OCR fallback.",
+                page.page_number, quality_score, settings.QUALITY_SCORE_THRESHOLD,
+            )
+        try:
+            ocr_result: ExtractionResult = extract_ocr(pdf_path, page.page_number)
+            extraction_method = ExtractionMethod.OCR
+            final_result = ocr_result
+        except Exception as exc:
+            logger.error(
+                "OCR extraction also failed for page %d of '%s': %s — "
+                "marking as ocr_failed.",
+                page.page_number, pdf_path, exc,
+            )
+            extraction_method = ExtractionMethod.OCR_FAILED
+            final_result = ExtractionResult()  # Empty — no content for this page
     else:
         extraction_method = ExtractionMethod.NATIVE
         final_result = native_result
 
     page.extraction_method = extraction_method
 
-    # Create one placeholder Chunk per page (real chunking in Phase 6)
-    chunk = Chunk(
-        page_id=page.id,
-        chunk_type=ChunkType.TEXT,
-        text=final_result.text,
-        reading_order=0,
-        review_status=ChunkReviewStatus.PENDING,
-    )
-    db.add(chunk)
+    # ── Step J: Create typed Chunks per extracted block ─────────────
+    _create_chunks_for_page(db, page.id, final_result)
 
-    # Step J: Set status to awaiting_feedback, round 1
+    # ── Step K: Set status to awaiting_feedback, round 1 ────────────
     page.status = PageStatus.AWAITING_FEEDBACK
     page.review_round = 1
 
     logger.debug(
-        "Page %d processed (method=%s, score=%.2f, status=%s).",
-        page.page_number, extraction_method.value, quality_score, page.status.value,
+        "Page %d processed (method=%s, score=%.2f, chunks=%d, status=%s).",
+        page.page_number,
+        extraction_method.value if extraction_method else "none",
+        quality_score,
+        len(final_result.text_blocks) + len(final_result.tables) + len(final_result.images),
+        page.status.value,
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Helpers
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _get_page_rect(
+    pdf_path: str | Path,
+    page_number: int,
+) -> tuple[float, float, float, float]:
+    """Open the PDF and return the page's bounding rectangle.
+
+    Returns ``(x0, y0, x1, y1)`` in points.  Falls back to a sensible
+    default (A4 portrait) if the PDF cannot be opened, so a bad page never
+    blocks the pipeline (NFR-14).
+    """
+    try:
+        doc = fitz.open(pdf_path)
+        idx = page_number - 1
+        if 0 <= idx < doc.page_count:
+            r = doc[idx].rect
+            doc.close()
+            return (r.x0, r.y0, r.x1, r.y1)
+        doc.close()
+    except Exception:
+        logger.debug("Could not get page rect for page %d; using A4 default.", page_number)
+    # A4 portrait fallback: 595 × 842 points
+    return (0.0, 0.0, 595.0, 842.0)
+
+
+def _create_chunks_for_page(
+    db: Session,
+    page_id: int,
+    result: ExtractionResult,
+) -> None:
+    """Create one :class:`Chunk` per extracted block for *page_id*.
+
+    Sets ``reading_order`` sequentially across text → table → image blocks
+    so the original page layout can be reconstructed during review (Phase 4)
+    and prompt assembly (Phase 7).
+    """
+    reading_order = 0
+
+    for tb in result.text_blocks:
+        chunk = Chunk(
+            page_id=page_id,
+            chunk_type=ChunkType.TEXT,
+            text=tb.text,
+            reading_order=reading_order,
+            review_status=ChunkReviewStatus.PENDING,
+        )
+        db.add(chunk)
+        reading_order += 1
+
+    for tab in result.tables:
+        chunk = Chunk(
+            page_id=page_id,
+            chunk_type=ChunkType.TABLE,
+            table_markdown=tab.markdown,
+            reading_order=reading_order,
+            review_status=ChunkReviewStatus.PENDING,
+        )
+        db.add(chunk)
+        reading_order += 1
+
+    for img in result.images:
+        chunk = Chunk(
+            page_id=page_id,
+            chunk_type=ChunkType.IMAGE,
+            image_caption=img.caption,
+            image_path=img.path,
+            reading_order=reading_order,
+            review_status=ChunkReviewStatus.PENDING,
+        )
+        db.add(chunk)
+        reading_order += 1
+
+    if reading_order == 0:
+        logger.warning("Page %d produced zero extractable blocks — creating empty placeholder.", page_id)
+        chunk = Chunk(
+            page_id=page_id,
+            chunk_type=ChunkType.TEXT,
+            text="[No extractable content on this page]",
+            reading_order=0,
+            review_status=ChunkReviewStatus.PENDING,
+        )
+        db.add(chunk)
+
 def process_uploaded_pdf(
     db: Session,
     document: Document,

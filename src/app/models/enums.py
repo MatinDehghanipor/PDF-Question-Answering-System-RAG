@@ -32,11 +32,18 @@ class PageStatus(str, Enum):
 
 
 class ExtractionMethod(str, Enum):
-    """Method used to extract a page's content (SDD §7)."""
+    """Method used to extract a page's content (SDD §7).
+
+    Added in Phase 3:
+    - ``ocr_failed`` — set when Tesseract is unavailable or crashes during
+      the OCR extraction path (NFR-14).  Pages with this status need manual
+      attention and will not have usable content chunks.
+    """
 
     NATIVE = "native"
     OCR = "ocr"
     LLM_VISION = "llm_vision"
+    OCR_FAILED = "ocr_failed"
 
 
 class ChunkType(str, Enum):

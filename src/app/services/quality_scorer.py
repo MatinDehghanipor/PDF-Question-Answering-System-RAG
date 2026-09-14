@@ -19,25 +19,85 @@ threshold is configurable via ``settings.QUALITY_SCORE_THRESHOLD`` (NFR-25).
 
 from pathlib import Path
 
-from app.services.native_extractor import ExtractionResult
+from app.schemas.extraction_result import ExtractionResult
+
+# Empirically-reasonable maximum character density (chars per point²).
+# A typical text page (A4 ≈ 595×842 pts ≈ 500 000 pt²) with ~4000 characters
+# yields ≈0.008 chars/pt².  We treat >=0.01 as "dense".
+_CHAR_DENSITY_CEILING = 0.01
+
+# Unicode category codes we consider "printable".
+_PRINTABLE_CATEGORIES = frozenset({
+    "Lu", "Ll", "Lt", "Lm", "Lo",  # Letters
+    "Nd", "Nl", "No",              # Numbers
+    "Pd", "Ps", "Pe", "Pi", "Pf",  # Punctuation
+    "Po",                           # Other punctuation
+    "Sm", "Sc", "Sk", "So",        # Symbols
+    "Zs",                           # Space separator
+})
 
 
-# STUB — replaced with real logic in Phase 3
-def score_quality(extraction_result: ExtractionResult) -> float:
-    """Compute a quality score for a page's native extraction.
+def score_quality(
+    extraction_result: ExtractionResult,
+    page_rect: tuple[float, float, float, float],
+) -> float:
+    """Compute a composite quality score for a page's native extraction.
 
-    .. admonition:: Phase-2 STUB
+    The score is a float in ``[0.0, 1.0]`` — higher means better quality.
+    Pages scoring below ``settings.QUALITY_SCORE_THRESHOLD`` fall through to
+    OCR extraction (FR-10).
 
-        Returns ``1.0`` (always above ``QUALITY_SCORE_THRESHOLD``) so the OCR
-        branch is never triggered during Phase 2.  Phase 3 replaces the body
-        with real heuristic or ML-based scoring.
+    [WORKING DEFAULT — OD-3]: Composite of character density (60%) and
+    non-garbled ratio (40%).
+
+    [WORKING DEFAULT — OD-13]: One score per page, not per block.
 
     Args:
-        extraction_result: The content extracted by ``extract_native``.
+        extraction_result: The content extracted by ``extract_native()``.
+        page_rect: The PDF page's bounding rectangle
+            ``(x0, y0, x1, y1)`` in points.
 
     Returns:
-        A float in ``[0.0, 1.0]`` where higher is better quality.
-        Always ``1.0`` in this stub.
+        A float in ``[0.0, 1.0]`` where higher indicates better quality.
     """
-    # STUB — Phase 3 replaces everything below this line
-    return 1.0
+    # ── 1. Character density ─────────────────────────────────────────
+    total_text = " ".join(tb.text for tb in extraction_result.text_blocks)
+    total_chars = len(total_text)
+
+    pw = page_rect[2] - page_rect[0]
+    ph = page_rect[3] - page_rect[1]
+    page_area = pw * ph
+    if page_area <= 0:
+        page_area = 1.0  # Prevent division by zero
+
+    char_density = total_chars / page_area
+    char_density_norm = min(char_density / _CHAR_DENSITY_CEILING, 1.0)
+
+    # ── 2. Garbled-character ratio ──────────────────────────────────
+    if total_chars == 0:
+        garbled_score = 0.0  # Empty page → poor quality → triggers OCR
+    else:
+        printable_count = _count_printable_chars(total_text)
+        garbled_ratio = 1.0 - (printable_count / total_chars)
+        garbled_score = 1.0 - garbled_ratio  # Invert: higher = less garbled
+
+    # ── 3. Composite ────────────────────────────────────────────────
+    final_score = 0.6 * char_density_norm + 0.4 * garbled_score
+    return max(0.0, min(1.0, final_score))
+
+
+def _count_printable_chars(text: str) -> int:
+    """Count characters that are alphanumeric or common punctuation."""
+    import unicodedata
+
+    count = 0
+    for ch in text:
+        try:
+            cat = unicodedata.category(ch)
+        except ValueError:
+            cat = "Cn"
+        if cat in _PRINTABLE_CATEGORIES:
+            count += 1
+        elif ch in (" ", "\t", "\n", "\r", "\xa0"):
+            count += 1
+    return count

@@ -26,6 +26,7 @@ from app.models.document import Document
 from app.models.enums import DocumentStatus, PageStatus
 from app.models.user import User
 from app.schemas.document import (
+    ApproveAllResponse,
     BatchUploadResponse,
     DocumentDeleteResponse,
     DocumentDetailOut,
@@ -34,7 +35,9 @@ from app.schemas.document import (
     DocumentUploadError,
     PageSummary,
 )
+from app.schemas.page import PageWithChunksOut
 from app.services.ingestion_orchestrator import process_uploaded_pdf
+from app.services.review_service import approve_all_pending
 from app.utils.pdf_utils import (
     PdfProcessingError,
     PdfValidationError,
@@ -300,3 +303,58 @@ def delete_document(
 
     logger.info("Document %d deleted for user %d.", document_id, current_user.id)
     return DocumentDeleteResponse(deleted=True, document_id=document_id)
+# ────────────────────────────────────────────────────────────────────────
+# GET /documents/{doc_id}/pages  — list pages with chunks for review
+# ────────────────────────────────────────────────────────────────────────
+
+
+@router.get("/{doc_id}/pages", response_model=list[PageWithChunksOut])
+def list_document_pages(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> list[PageWithChunksOut]:
+    """List all pages of a document with their chunks for review (NFR-16, NFR-27)."""
+    doc = _get_user_document_or_404(db, doc_id, current_user)
+    return [
+        PageWithChunksOut(
+            id=p.id,
+            document_id=p.document_id,
+            page_number=p.page_number,
+            status=p.status,
+            extraction_method=p.extraction_method,
+            quality_score=p.quality_score,
+            review_round=p.review_round,
+            review_note=p.review_note,
+            updated_at=p.updated_at,
+            chunks=p.chunks,
+        )
+        for p in (doc.pages or [])
+    ]
+
+
+# ────────────────────────────────────────────────────────────────────────
+# POST /documents/{doc_id}/approve-all  — bulk approve all pending pages
+# ────────────────────────────────────────────────────────────────────────
+
+
+@router.post("/{doc_id}/approve-all", response_model=ApproveAllResponse)
+def approve_all(
+    doc_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> ApproveAllResponse:
+    """Approve every pending page of a document in a single step (FR-13, NFR-11, NFR-26)."""
+    doc = _get_user_document_or_404(db, doc_id, current_user)
+    count = approve_all_pending(doc, db)
+    db.commit()
+    message = (
+        f"Approved {count} page(s)."
+        if count > 0
+        else "No pending pages to approve."
+    )
+    return ApproveAllResponse(
+        document_id=doc_id,
+        pages_approved=count,
+        message=message,
+    )

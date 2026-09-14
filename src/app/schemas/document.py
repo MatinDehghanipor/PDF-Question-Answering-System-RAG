@@ -66,6 +66,14 @@ class DocumentDeleteResponse(BaseModel):
     document_id: int
 
 
+class ApproveAllResponse(BaseModel):
+    """Confirmation of an Approve-All action (FR-13, NFR-11)."""
+
+    document_id: int
+    pages_approved: int
+    message: str
+
+
 class DocumentUploadError(BaseModel):
     """Error details for a single file in a batch upload."""
 

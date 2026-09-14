@@ -7,6 +7,7 @@ approved page's content, plus its review state.
 
 from datetime import datetime
 
+import sqlalchemy as sa
 from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -26,6 +27,9 @@ class Chunk(Base):
         image_caption: Caption for an image-type chunk (nullable).
         image_path: Filesystem path to an extracted image (nullable).
         reading_order: Order of this chunk within its page (for reconstruction).
+        excluded: Flag set by the reviewer to exclude this chunk from indexing
+            (Phase 4).  Once ``true``, the chunk gets ``review_status = rejected``
+            upon the next page approval.
         review_status: pending / approved / edited / rejected.
         reviewed_at: When a human/LLM reviewer last touched this chunk (nullable).
         page: The :class:`Page` this chunk belongs to.
@@ -46,6 +50,7 @@ class Chunk(Base):
     image_caption: Mapped[str | None] = mapped_column(Text, nullable=True)
     image_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     reading_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    excluded: Mapped[bool] = mapped_column(sa.Boolean, default=False, nullable=False)
     review_status: Mapped[ChunkReviewStatus] = mapped_column(
         Enum(ChunkReviewStatus, values_callable=lambda e: [m.value for m in e]),
         default=ChunkReviewStatus.PENDING,

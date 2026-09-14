@@ -23,12 +23,19 @@ class DocumentStatus(str, Enum):
 
 
 class PageStatus(str, Enum):
-    """Lifecycle status of a single page during the ingestion pipeline (SDD §7)."""
+    """Lifecycle status of a single page during the ingestion pipeline (SDD §7).
+
+    Added in Phase 4:
+    - ``discarded`` — set when the entire document is discarded due to
+      Round-2 rejection (individual page gets this status before full
+      document cascade cleanup in Phase 5/6).
+    """
 
     INITIAL_PROCESSING = "initial_processing"
     AWAITING_FEEDBACK = "awaiting_feedback"
     LLM_REVIEW = "llm_review"
     APPROVED = "approved"
+    DISCARDED = "discarded"
 
 
 class ExtractionMethod(str, Enum):

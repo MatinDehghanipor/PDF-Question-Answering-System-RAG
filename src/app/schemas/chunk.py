@@ -24,5 +24,6 @@ class ChunkOut(BaseModel):
     image_caption: str | None = None
     image_path: str | None = None
     reading_order: int
+    excluded: bool = False
     review_status: ChunkReviewStatus
     reviewed_at: datetime | None = None

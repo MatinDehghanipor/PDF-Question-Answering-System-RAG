@@ -1,12 +1,11 @@
-"""Chunker placeholder (Phase 4 stub).
+"""Chunker placeholder (Phase 5 stub).
 
 Implements the "Chunker" component (SDD §4): splits an approved page's
-content into indexable, type- and order-traceable chunks.  Chunk size and
-overlap are configurable via ``settings.CHUNK_SIZE_TOKENS`` and
-``settings.CHUNK_OVERLAP_TOKENS`` (NFR-25, OD-1).
+content into indexable chunks, and provides a hook for removing document
+embeddings during discard operations.
 
-Phase 4 adds the stub entry point ``enqueue_for_indexing(page_id)`` that the
-review service calls when a page is approved.  Real implementation is Phase 6.
+Phase 5 adds the stub ``remove_embeddings_for_document(document_id)`` called
+by ``discard_document`` in the review service.  Real implementation is Phase 6.
 """
 
 import logging
@@ -15,16 +14,23 @@ logger = logging.getLogger(__name__)
 
 
 def enqueue_for_indexing(page_id: int) -> None:
-    """Enqueue an approved page for chunking, embedding, and indexing.
+    """Enqueue an approved page for chunking, embedding, and indexing (Phase 6)."""
+    pass
 
-    Called by :func:`app.services.review_service.approve_page` after a page
-    is approved.  Phase 6 replaces the body with real logic.
+
+def remove_embeddings_for_document(document_id: int) -> None:
+    """Remove all stored embeddings for a discarded document.
+
+    Called by :func:`app.services.review_service.discard_document` during
+    document discard (FR-16).  Real implementation is in Phase 6 when the
+    vector store exists.
 
     Args:
-        page_id: The id of the approved Page whose chunks should be indexed.
+        document_id: The id of the document whose embeddings should be removed.
     """
-    # TODO(Phase 6): implement chunk_page() and invoke embedding service.
+    # TODO(Phase 6): query vector store for all embeddings linked to chunks
+    # belonging to this document's pages and delete them.
     logger.info(
-        "# TODO(Phase 6): chunk, embed, and index approved chunks for page %d.",
-        page_id,
+        "# TODO(Phase 6): remove embeddings for document %d from vector store.",
+        document_id,
     )

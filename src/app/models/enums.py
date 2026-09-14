@@ -45,12 +45,19 @@ class ExtractionMethod(str, Enum):
     - ``ocr_failed`` — set when Tesseract is unavailable or crashes during
       the OCR extraction path (NFR-14).  Pages with this status need manual
       attention and will not have usable content chunks.
+
+    Added in Phase 5:
+    - ``llm_review_failed`` — set when the vision-LLM call for LLM Review
+      fails (network error, rate limit, malformed response).  The page stays
+      in ``llm_review`` status so the user can retry.  Mirrors the NFR-14
+      pattern from the OCR path (Phase 3).
     """
 
     NATIVE = "native"
     OCR = "ocr"
     LLM_VISION = "llm_vision"
     OCR_FAILED = "ocr_failed"
+    LLM_REVIEW_FAILED = "llm_review_failed"
 
 
 class ChunkType(str, Enum):

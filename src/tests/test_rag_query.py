@@ -8,12 +8,14 @@ Covers:
     - Raw Mode without `document_ids` returns 422 validation error.
     - A failed LLM call returns 502 while the Query row is still persisted.
 
-Test doubles (see :func:`_patch_embedding_and_vector_store`):
-    Embeddings, the vector store, and the answering LLM are all faked, so these
-    tests need no model download, no Gemini API key, and write nothing to
-    Chroma.  Every fake is installed both on the source module and on each
-    module that imported the real function by name, because ``from x import f``
-    copies the reference into the importing module.
+Test doubles (see ``tests/conftest.py``):
+    ``fake_embedding_model`` (autouse) replaces the embedding function in every
+    module that imported it, so no model download and no Gemini API key are
+    needed; the opt-in ``fake_vector_store`` fixture additionally stubs vector
+    writes and retrieval with a single canned hit.  Every fake has to be
+    installed both on the source module and on each module that imported the real
+    function by name, because ``from x import f`` copies the reference into the
+    importing module.
 """
 
 from __future__ import annotations
@@ -22,7 +24,6 @@ import asyncio
 import io
 import time
 import uuid
-from pathlib import Path
 
 import pytest
 from httpx import ASGITransport, AsyncClient
@@ -37,12 +38,6 @@ _SUFFIX = uuid.uuid4().hex[:8]
 # slow/CI machine does not produce a spurious "never reached awaiting_feedback"
 # failure (a cold OCR-fallback path alone can take several seconds).
 _INGESTION_TIMEOUT_SECONDS = 60.0
-
-
-@pytest.fixture(autouse=True)
-def _ensure_storage_dir():
-    Path(settings.FILE_STORAGE_PATH).mkdir(parents=True, exist_ok=True)
-    yield
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -71,78 +66,6 @@ async def _create_user_and_login(client: AsyncClient, suffix: str) -> str:
     return resp.json()["access_token"]
 
 
-def _fake_embed(texts: list[str]) -> list[list[float]]:
-    """Return a deterministic fake embedding for any input text."""
-    return [[0.01, -0.02, 0.03]] * len(texts)
-
-
-def _patch_embedding_and_vector_store(monkeypatch: pytest.MonkeyPatch) -> dict:
-    """Replace embedding and vector-store calls with fast fakes.
-
-    Must be called before any document approval or query that would trigger
-    ``embed_texts``, ``upsert_chunks``, or ``top_k_search``.
-
-    Every fake is installed twice: on the source module (``embedding_service`` /
-    ``vector_store``) and on each module that imported the real function *by
-    name* (``chunker``, ``retrieval_service``).  ``from x import f`` copies the
-    reference into the importing module, so patching only the source module left
-    the real implementation — including the ~27 s SentenceTransformer model load
-    — on the code path under test.
-
-    Returns:
-        A mutable ``state`` dict, pre-filled with canned metadata.  Callers
-        should pass it to :func:`_upload_and_approve_pdf`, which replaces those
-        values with the identity of the document actually uploaded, so the fake
-        search result mirrors real data instead of hard-coded ids.
-    """
-    from app.services import embedding_service
-    from app.services import vector_store
-    from app.services import chunker
-    from app.services import retrieval_service
-
-    state: dict = {
-        "chunk_id": "chunk_1",
-        "document_id": 1,
-        "document_filename": "rag_test.pdf",
-        "page_id": 1,
-        "page_number": 1,
-    }
-
-    def _noop_upsert(user_id, chunk_ids, vectors, documents, metadatas):
-        return None
-
-    def _fake_top_k(user_id, query_vector, k):
-        return [
-            {
-                "chunk_id": state["chunk_id"],
-                "metadata": {
-                    "document_id": state["document_id"],
-                    "document_filename": state["document_filename"],
-                    "page_id": state["page_id"],
-                    "page_number": state["page_number"],
-                    "chunk_type": "text",
-                    "reading_order": 0,
-                    "sub_index": 0,
-                },
-                "document": "RAG test content about artificial intelligence.",
-                "distance": 0.3,
-            }
-        ]
-
-    # Embedding function — source module plus direct importers.
-    monkeypatch.setattr(embedding_service, "embed_texts", _fake_embed)
-    monkeypatch.setattr(chunker, "embed_texts", _fake_embed)
-    monkeypatch.setattr(retrieval_service, "embed_texts", _fake_embed)
-
-    # Vector store — same rule: source module plus direct importers.
-    monkeypatch.setattr(vector_store, "upsert_chunks", _noop_upsert)
-    monkeypatch.setattr(vector_store, "top_k_search", _fake_top_k)
-    monkeypatch.setattr(chunker, "upsert_chunks", _noop_upsert)
-    monkeypatch.setattr(retrieval_service, "top_k_search", _fake_top_k)
-
-    return state
-
-
 async def _upload_and_approve_pdf(
     client: AsyncClient, headers: dict, state: dict | None = None
 ) -> int:
@@ -151,11 +74,11 @@ async def _upload_and_approve_pdf(
     Args:
         client: In-process ASGI client.
         headers: Bearer-auth headers for the registered user.
-        state: Optional dict returned by
-            :func:`_patch_embedding_and_vector_store`.  When given, it is updated
-            with the real document/page/chunk identity of the document that was
-            just indexed, so the fake vector store returns metadata matching the
-            document under test.
+        state: Optional dict returned by the ``fake_vector_store`` fixture defined
+            in ``tests/conftest.py``.  When given, it is updated with the real
+            document/page/chunk identity of the document that was just indexed, so
+            the fake vector store returns metadata matching the document under
+            test.
 
     Returns:
         The created document's id.
@@ -382,9 +305,9 @@ class TestRagQueryHappyPath:
     """Successful RAG Mode query (with LLM call mocked)."""
 
     @pytest.mark.asyncio
-    async def test_rag_query_returns_answer_with_mode_and_sources(self, monkeypatch):
+    async def test_rag_query_returns_answer_with_mode_and_sources(self, fake_vector_store):
         """A query against a ready document returns AnswerOut with all expected fields."""
-        state = _patch_embedding_and_vector_store(monkeypatch)
+        state = fake_vector_store
         from app.services import llm_service
 
         original_call = llm_service.call_text_llm
@@ -454,9 +377,9 @@ class TestRagQueryHappyPath:
             llm_service.call_text_llm = original_call
 
     @pytest.mark.asyncio
-    async def test_rag_query_with_custom_k(self, monkeypatch):
+    async def test_rag_query_with_custom_k(self, fake_vector_store):
         """Explicit k_value is accepted and recorded on the Query row."""
-        state = _patch_embedding_and_vector_store(monkeypatch)
+        state = fake_vector_store
         from app.services import llm_service
 
         original_call = llm_service.call_text_llm
@@ -501,9 +424,9 @@ class TestRagQueryFailurePaths:
     """Failure paths that must still leave consistent state behind (Phase 7)."""
 
     @pytest.mark.asyncio
-    async def test_llm_failure_returns_502(self, monkeypatch):
+    async def test_llm_failure_returns_502(self, fake_vector_store):
         """If the LLM call fails, a 502 is returned but the Query row persists."""
-        state = _patch_embedding_and_vector_store(monkeypatch)
+        state = fake_vector_store
         from app.services import llm_service
 
         original_call = llm_service.call_text_llm

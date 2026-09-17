@@ -105,7 +105,21 @@ docker run -p 8000:8000 pdf-qa-system
 ## Running Tests
 
 ```bash
-pytest tests/
+cd src
+pytest tests/          # or: python -m pytest tests/ -v
+```
+
+The suite is self-contained.  `tests/conftest.py` points `DATABASE_URL`,
+`FILE_STORAGE_PATH` and `VECTOR_STORE_PATH` at a temporary directory for the
+whole session, creates the schema with `Base.metadata.create_all()`, and stubs
+the embedding model — so tests need no `.env`, no Gemini API key and no model
+download, and they leave the developer's `data/` tree (database, PDFs, vector
+store) untouched.  The temporary directory is deleted at the end of the run.
+
+Since those paths are absolute, the tests can be run from anywhere:
+
+```bash
+python -m pytest src/tests/ -v
 ```
 
 ## Configuration (NFR-25)

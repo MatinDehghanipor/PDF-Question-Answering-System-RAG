@@ -1,9 +1,8 @@
-"""Answer feedback API routes (Phase 0 stubs wired for auth in Phase 1).
+"""Answer feedback API routes (POST implemented in Phase 9).
 
 Implements the "Answer Feedback Store" endpoints (SDD §4): POST /feedback
 persists a user's rating/comment on an answer; GET /feedback lists the
-user's feedback.  Real persistence logic arrives in Phase 9, but
-authentication is already wired in so later phases never have to retrofit it.
+user's feedback.
 
 STANDING RULE (applies to every route file from Phase 1 onward): every
 database query that reads or writes user-owned data (Document/Page/Chunk/
@@ -12,46 +11,71 @@ Query/Answer/Feedback/TokenUsage) MUST filter by the current user's id, e.g.
 FR-3 / NFR-21 (per-user isolation) is always enforced at the query layer.
 """
 
-from datetime import datetime
-
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.deps import get_current_user
 from app.models.user import User
-from app.schemas.feedback import FeedbackCreate, FeedbackOut
+from app.schemas.feedback import FeedbackOut, FeedbackRequest
+from app.services.feedback_service import (
+    AnswerNotFoundError,
+    EmptyFeedbackError,
+    submit_feedback,
+)
 
 router = APIRouter(prefix="/feedback", tags=["feedback"])
 
 
 @router.post("", response_model=FeedbackOut, status_code=201)
 def create_feedback(
-    body: FeedbackCreate,
+    body: FeedbackRequest,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> FeedbackOut:
-    """Submit a rating and optional comment for an answer (FR-28/FR-29 — Phase 9).
+    """Submit a rating and/or comment for an answer (FR-31, FR-32 — Phase 9).
 
-    Requires authentication (NFR-20).  Phase 9 must verify the current user
-    owns the query/answer being rated (via Query.user_id == current_user.id)
-    and persist the Feedback row scoped to current_user.id (FR-3).
+    Feedback submission is entirely optional and one-way: no other endpoint
+    reads it as a precondition, so a user can always keep querying without
+    ever leaving feedback (NFR-28).
 
     Args:
-        body: The query/answer being rated plus the rating and comment.
-        db: Database session (unused by the stub).
-        current_user: The authenticated user who owns the feedback.
+        body: The answer being rated plus the rating and/or comment.
+        db: Database session.
+        current_user: The authenticated user who owns the answer.
 
     Returns:
-        A stub feedback record.
+        The persisted feedback record.
+
+    Raises:
+        HTTPException (400): Neither a rating nor a non-empty comment was
+            supplied — there would be nothing to record.
+        HTTPException (404): The answer does not exist or belongs to another
+            user.  Both cases share one response so the endpoint cannot be used
+            to discover other users' answers (FR-3 / NFR-21).
     """
-    # TODO(Phase 9): persist a Feedback row linked to the query/answer and
-    # enforce that the user owns the query (NFR-21).  All Feedback reads and
-    # writes must filter by current_user.id.
-    return FeedbackOut(
-        id=1, query_id=body.query_id, answer_id=body.answer_id,
-        rating=body.rating, comment=body.comment, timestamp=datetime.utcnow(),
-    )
+    try:
+        feedback = submit_feedback(
+            db=db,
+            user_id=current_user.id,
+            answer_id=body.answer_id,
+            rating=body.rating,
+            comment=body.comment,
+        )
+    except EmptyFeedbackError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
+        ) from exc
+    except AnswerNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
+        ) from exc
+
+    db.commit()
+    # ``timestamp`` is a server-side default, so the row must be re-read before
+    # it can be serialised into FeedbackOut.
+    db.refresh(feedback)
+    return FeedbackOut.model_validate(feedback)
 
 
 @router.get("", response_model=list[FeedbackOut])
@@ -61,19 +85,27 @@ def list_feedback(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> list[FeedbackOut]:
-    """List the current user's feedback records (FR-30 — Phase 9).
+    """List the current user's feedback records.
 
-    Requires authentication (NFR-20).  The Phase-9 query must filter by
+    NOTE — this endpoint is still an inert placeholder and returns an empty
+    list rather than the caller's rows.  Phase 9 specifies only
+    ``POST /feedback`` (FR-31/FR-32 cover submission and persistence, not
+    retrieval), and no later phase in the implementation plan owns this
+    listing, so implementing it would be unrequested scope.  It is documented
+    here rather than silently faked because a caller cannot currently tell an
+    empty result from an unimplemented one.  It remains protected by auth, so
+    it leaks nothing in the meantime.
+
+    Requires authentication (NFR-20).  Any real implementation must filter by
     current_user.id so one user can never see another user's feedback (FR-3).
 
     Args:
         skip: Pagination offset.
         limit: Pagination page size.
-        db: Database session (unused by the stub).
-        current_user: The authenticated user whose feedback is returned.
+        db: Database session (unused by the placeholder).
+        current_user: The authenticated user whose feedback would be returned.
 
     Returns:
-        A stub (empty) list.
+        An empty list.
     """
-    # TODO(Phase 9): query Feedback rows filtered by current_user.id.
     return []

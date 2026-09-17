@@ -48,6 +48,26 @@ except Exception as exc:
         "Ensure Ghostscript is installed and on PATH.", exc,
     )
 
+# ──────────────────────────────────────────────────────────────────────
+# FR-37 reprocessing guard
+# ──────────────────────────────────────────────────────────────────────
+_processed_native: set[tuple[str, int]] = set()
+
+
+def _check_reprocess_guard(pdf_path: str | Path, page_number: int) -> None:
+    """Warn if this (pdf_path, page_number) was already extracted (FR-37).
+
+    This is an in-memory guard — it resets on process restart.  In production
+    the database row status is the authoritative gatekeeper.
+    """
+    key = (str(pdf_path), page_number)
+    if key in _processed_native:
+        logger.warning(
+            "FR-37 guard: extract_native called again for '%s' page %d.",
+            pdf_path, page_number,
+        )
+    _processed_native.add(key)
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Public API
@@ -78,6 +98,7 @@ def extract_native(
             exist.  The caller should catch this and treat quality as 0,
             triggering OCR fallback.
     """
+    _check_reprocess_guard(pdf_path, page_number)
     try:
         doc: fitz.Document = fitz.open(pdf_path)
     except Exception as exc:

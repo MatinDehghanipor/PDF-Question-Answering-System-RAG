@@ -265,10 +265,26 @@ def process_uploaded_pdf(
     db.flush()
 
     for page in pages:
-        _process_single_page(db, page, pdf_path)
+        try:
+            _process_single_page(db, page, pdf_path)
+        except Exception as exc:
+            logger.error(
+                "Failed to process page %d of document %d: %s — "
+                "marking as failed and continuing with remaining pages.",
+                page.page_number, document.id, exc,
+            )
+            page.status = PageStatus.INITIAL_PROCESSING  # Keep as initial_processing — failed
+            db.flush()
 
-    document.status = DocumentStatus.AWAITING_FEEDBACK
-    logger.info("Document %d fully processed - status=%s.", document.id, document.status.value)
+    # Final status: if every page failed, mark document as failed instead of
+    # awaiting_feedback.
+    successful = [p for p in pages if p.status == PageStatus.AWAITING_FEEDBACK]
+    if not successful:
+        document.status = DocumentStatus.FAILED
+        logger.error("Document %d: all pages failed processing.", document.id)
+    else:
+        document.status = DocumentStatus.AWAITING_FEEDBACK
+        logger.info("Document %d fully processed - status=%s.", document.id, document.status.value)
 
 
 def reprocess_document(document_id: int) -> None:

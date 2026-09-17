@@ -23,6 +23,31 @@ from app.services.vector_store import delete_chunks_for_document, upsert_chunks
 
 logger = logging.getLogger(__name__)
 
+# ──────────────────────────────────────────────────────────────────────
+# FR-37 reprocessing guard
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _check_reindex_guard(page: Page, db: Session) -> None:
+    """Warn if *page* already has Embedding rows (FR-37 defense-in-depth).
+
+    The primary gatekeeper is the page status machine (only approved pages
+    are indexed), but this in-DB check catches any code path that calls
+    ``split_and_index_page`` twice for the same page — for example during
+    testing or after an improper status transition.
+    """
+    existing = db.query(Embedding).filter(
+        Embedding.chunk_id.in_(
+            db.query(Chunk.id).filter(Chunk.page_id == page.id),
+        ),
+    ).first()
+    if existing is not None:
+        logger.warning(
+            "FR-37 guard: page %d already has Embedding rows — re-indexing "
+            "may duplicate vectors.  page.status=%s.",
+            page.id, page.status.value if page.status else "None",
+        )
+
 
 def split_and_index_page(db: Session, page: Page, user_id: int) -> None:
     """Index a page's approved chunks into Chroma (FR-20, FR-21).
@@ -42,6 +67,7 @@ def split_and_index_page(db: Session, page: Page, user_id: int) -> None:
         page: The approved Page.
         user_id: The document owner's id.
     """
+    _check_reindex_guard(page, db)
     doc = page.document
 
     # 1. Approved/edited chunks only (never rejected/pending).

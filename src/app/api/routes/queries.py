@@ -10,11 +10,12 @@ from __future__ import annotations
 import logging
 
 from pathlib import Path as _Path  # avoid shadowing the import
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.exceptions import AppException, NotFoundError, UpstreamServiceError, ValidationError
 from app.deps import get_current_user
 from app.models.answer import Answer
 from app.models.document import Document
@@ -58,22 +59,16 @@ def _check_raw_mode_limits(file_sizes_mb: list[float], total_pages: int) -> None
     """
     total_mb = sum(file_sizes_mb)
     if total_mb > settings.RAW_MODE_MAX_FILE_MB:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=(
-                f"Total file size ({total_mb:.1f} MB) exceeds Raw Mode maximum "
-                f"({settings.RAW_MODE_MAX_FILE_MB} MB).  Please select fewer or "
-                f"smaller files, or use RAG Mode instead."
-            ),
+        raise ValidationError(
+            f"Total file size ({total_mb:.1f} MB) exceeds Raw Mode maximum "
+            f"({settings.RAW_MODE_MAX_FILE_MB} MB).  Please select fewer or "
+            f"smaller files, or use RAG Mode instead.",
         )
     if total_pages > settings.RAW_MODE_MAX_PAGES:
-        raise HTTPException(
-            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-            detail=(
-                f"Total page count ({total_pages}) exceeds Raw Mode maximum "
-                f"({settings.RAW_MODE_MAX_PAGES} pages).  Please select fewer or "
-                f"shorter files, or use RAG Mode instead."
-            ),
+        raise ValidationError(
+            f"Total page count ({total_pages}) exceeds Raw Mode maximum "
+            f"({settings.RAW_MODE_MAX_PAGES} pages).  Please select fewer or "
+            f"shorter files, or use RAG Mode instead.",
         )
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -114,10 +109,7 @@ def _handle_raw_mode(
     """
     # ── Validate document_ids ──────────────────────────────────────────
     if not body.document_ids:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="document_ids is required when mode='raw' and must be a non-empty list.",
-        )
+        raise ValidationError("document_ids is required when mode='raw' and must be a non-empty list.")
 
     doc_ids = body.document_ids
 
@@ -136,10 +128,7 @@ def _handle_raw_mode(
     if len(documents) != len(doc_ids):
         found_ids = {d.id for d in documents}
         missing = [did for did in doc_ids if did not in found_ids]
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Document(s) with id(s) {missing} not found or not accessible.",
-        )
+        raise NotFoundError(f"Document(s) with id(s) {missing} not found or not accessible.")
 
     # ── OD-7 limit checks ──────────────────────────────────────────────
     file_sizes_mb: list[float] = []
@@ -147,10 +136,7 @@ def _handle_raw_mode(
     for doc in documents:
         pdf_path = _Path(settings.FILE_STORAGE_PATH) / str(current_user.id) / f"{doc.id}.pdf"
         if not pdf_path.exists():
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"File for document {doc.id} ('{doc.filename}') is missing from storage.",
-            )
+            raise AppException(f"File for document {doc.id} ('{doc.filename}') is missing from storage.")
         file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
         file_sizes_mb.append(file_size_mb)
         total_pages += doc.page_count or 0
@@ -180,10 +166,7 @@ def _handle_raw_mode(
     except Exception as exc:
         logger.error("Raw Mode LLM call failed for query %d: %s", db_query.id, exc)
         db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Raw Mode LLM answer generation failed: {exc}",
-        )
+        raise UpstreamServiceError(f"Raw Mode LLM answer generation failed: {exc}")
 
     # ── Sources: filenames only (no page granularity in Raw Mode) ─────
     sources = [
@@ -280,10 +263,9 @@ def ask_question(
     # ── Resolve k ──────────────────────────────────────────────────────
     k_value = body.k_value if body.k_value is not None else settings.DEFAULT_TOP_K
     if k_value < settings.MIN_TOP_K or k_value > settings.MAX_TOP_K:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"k_value must be between {settings.MIN_TOP_K} and {settings.MAX_TOP_K} "
-                   f"(got {k_value}).",
+        raise ValidationError(
+            f"k_value must be between {settings.MIN_TOP_K} and {settings.MAX_TOP_K} "
+            f"(got {k_value}).",
         )
 
     # ── Mode dispatch ──────────────────────────────────────────────────
@@ -300,10 +282,9 @@ def ask_question(
         .count()
     )
     if ready_count == 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No Ready documents found. Please upload and get at least one "
-                   "document fully approved before asking a question.",
+        raise ValidationError(
+            "No Ready documents found. Please upload and get at least one "
+            "document fully approved before asking a question.",
         )
 
     # ── Create Query row ───────────────────────────────────────────────
@@ -323,10 +304,7 @@ def ask_question(
         logger.error("Retrieval failed for user %d: %s", current_user.id, exc)
         # Query row is persisted, but we cannot answer.
         db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Vector search failed: {exc}",
-        )
+        raise UpstreamServiceError(f"Vector search failed: {exc}")
 
     # ── Build prompt ───────────────────────────────────────────────────
     prompt = build_rag_prompt(body.text, retrieved)
@@ -339,10 +317,7 @@ def ask_question(
         # Query row is persisted (so usage history is not lost), but no
         # Answer row is created for a failed call.
         db.commit()
-        raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"LLM answer generation failed: {exc}",
-        )
+        raise UpstreamServiceError(f"LLM answer generation failed: {exc}")
 
     # ── Deduplicate sources (FR-30) ────────────────────────────────────
     seen: set[tuple[str, int]] = set()

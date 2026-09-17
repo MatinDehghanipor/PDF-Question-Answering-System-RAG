@@ -11,6 +11,7 @@ from typing import Annotated
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError
+
 from sqlalchemy.orm import Session
 
 from app.core.database import Base, SessionLocal, engine, get_db

@@ -11,10 +11,11 @@ Query/Answer/Feedback/TokenUsage) MUST filter by the current user's id, e.g.
 FR-3 / NFR-21 (per-user isolation) is always enforced at the query layer.
 """
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.exceptions import NotFoundError, ValidationError
 from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.feedback import FeedbackOut, FeedbackRequest
@@ -63,13 +64,9 @@ def create_feedback(
             comment=body.comment,
         )
     except EmptyFeedbackError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)
-        ) from exc
+        raise ValidationError(str(exc)) from exc
     except AnswerNotFoundError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)
-        ) from exc
+        raise NotFoundError(str(exc)) from exc
 
     db.commit()
     # ``timestamp`` is a server-side default, so the row must be re-read before

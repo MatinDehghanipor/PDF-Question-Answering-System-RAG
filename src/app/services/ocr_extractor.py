@@ -56,6 +56,22 @@ except Exception as exc:
         "camelot-py import failed (%s); table extraction in OCR path disabled.", exc,
     )
 
+# ──────────────────────────────────────────────────────────────────────
+# FR-37 reprocessing guard
+# ──────────────────────────────────────────────────────────────────────
+_processed_ocr: set[tuple[str, int]] = set()
+
+
+def _check_reprocess_guard(pdf_path: str | Path, page_number: int) -> None:
+    """Warn if this (pdf_path, page_number) was already OCR-extracted (FR-37)."""
+    key = (str(pdf_path), page_number)
+    if key in _processed_ocr:
+        logger.warning(
+            "FR-37 guard: extract_ocr called again for '%s' page %d.",
+            pdf_path, page_number,
+        )
+    _processed_ocr.add(key)
+
 
 def extract_ocr(pdf_path: str | Path, page_number: int) -> ExtractionResult:
     """Extract content from a PDF page using OCR (FR-10 / FR-8 via OCR).
@@ -78,6 +94,7 @@ def extract_ocr(pdf_path: str | Path, page_number: int) -> ExtractionResult:
             binary is not available — the caller should catch this and mark
             the page as ``ocr_failed``.
     """
+    _check_reprocess_guard(pdf_path, page_number)
     try:
         doc: fitz.Document = fitz.open(pdf_path)
     except Exception as exc:

@@ -17,9 +17,12 @@ threshold is configurable via ``settings.QUALITY_SCORE_THRESHOLD`` (NFR-25).
     a real one, and the OCR branch activates automatically.
 """
 
+import logging
 from pathlib import Path
 
 from app.schemas.extraction_result import ExtractionResult
+
+logger = logging.getLogger(__name__)
 
 # Empirically-reasonable maximum character density (chars per point²).
 # A typical text page (A4 ≈ 595×842 pts ≈ 500 000 pt²) with ~4000 characters
@@ -35,6 +38,27 @@ _PRINTABLE_CATEGORIES = frozenset({
     "Sm", "Sc", "Sk", "So",        # Symbols
     "Zs",                           # Space separator
 })
+
+
+# ──────────────────────────────────────────────────────────────────────
+# FR-37 reprocessing guard
+# ──────────────────────────────────────────────────────────────────────
+_processed_scores: set[int] = set()
+
+
+def _check_reprocess_guard(
+    extraction_result: ExtractionResult,
+    page_rect: tuple[float, float, float, float],
+) -> None:
+    """Warn if this extraction_result object was already scored (FR-37)."""
+    obj_id = id(extraction_result)
+    if obj_id in _processed_scores:
+        logger.warning(
+            "FR-37 guard: score_quality called again on same ExtractionResult object "
+            "(page_rect=%s).",
+            page_rect,
+        )
+    _processed_scores.add(obj_id)
 
 
 def score_quality(
@@ -60,6 +84,8 @@ def score_quality(
     Returns:
         A float in ``[0.0, 1.0]`` where higher indicates better quality.
     """
+    _check_reprocess_guard(extraction_result, page_rect)
+
     # ── 1. Character density ─────────────────────────────────────────
     total_text = " ".join(tb.text for tb in extraction_result.text_blocks)
     total_chars = len(total_text)

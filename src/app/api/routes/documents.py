@@ -16,11 +16,12 @@ FR-3 / NFR-21 (per-user isolation) is always enforced at the query layer.
 
 import logging
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.core.exceptions import NotFoundError, ValidationError
 from app.deps import get_current_user
 from app.models.document import Document
 from app.models.enums import DocumentStatus, PageStatus
@@ -98,10 +99,7 @@ def _get_user_document_or_404(
         .first()
     )
     if doc is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Document {document_id} not found or not owned by you.",
-        )
+        raise NotFoundError(f"Document {document_id} not found or not owned by you.")
     return doc
 
 

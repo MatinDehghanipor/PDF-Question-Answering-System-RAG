@@ -122,14 +122,36 @@ def _index_page_and_update_status(page: Page, db: Session) -> None:
     leaving the page's chunks in their pre-approval state.  This satisfies the
     Phase 6 requirement that indexing succeeding is a precondition for the
     final "Approved" status being persisted.
+
+    NFR-12 atomicity: if the Chroma upsert succeeds but the subsequent DB
+    status update fails, the Chroma vectors are removed so no orphaned
+    embeddings remain in the vector store.
     """
     doc = page.document
+    user_id = doc.user_id
     try:
-        split_and_index_page(db, page, doc.user_id)
+        split_and_index_page(db, page, user_id)
     except Exception:
         logger.error("Indexing failed for page %d — transaction will roll back.", page.id)
         raise
-    _update_document_status_if_ready(doc, db)
+    try:
+        _update_document_status_if_ready(doc, db)
+    except Exception:
+        # Chroma vectors were written but DB update failed — roll back the
+        # vectors so we are not left with orphaned embeddings.
+        logger.error(
+            "DB status update failed for page %d (document %d) after indexing — "
+            "removing Chroma vectors to maintain atomicity.",
+            page.id, doc.id,
+        )
+        try:
+            delete_chunks_for_document(user_id, doc.id)
+        except Exception as cleanup_exc:
+            logger.error(
+                "Failed to clean up Chroma vectors after DB failure for page %d: %s",
+                page.id, cleanup_exc,
+            )
+        raise
 
 
 def _update_document_status_if_ready(document: Document, db: Session) -> None:

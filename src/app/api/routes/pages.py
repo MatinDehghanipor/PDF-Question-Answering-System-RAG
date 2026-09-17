@@ -14,10 +14,11 @@ MUST filter by the current user's id.
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.exceptions import ConflictError, NotFoundError, ValidationError
 from app.deps import get_current_user
 from app.models.chunk import Chunk
 from app.models.document import Document
@@ -60,7 +61,7 @@ def _get_user_page_or_404(
         .first()
     )
     if page is None:
-        raise HTTPException(status_code=404, detail=f"Page {page_id} not found.")
+        raise NotFoundError(f"Page {page_id} not found.")
     return page
 # ────────────────────────────────────────────────────────────────────────
 # GET /pages/{page_id}/review  — fetch page with chunks for review
@@ -109,9 +110,8 @@ def submit_page_review(
     page = _get_user_page_or_404(db, page_id, current_user)
 
     if page.status != PageStatus.AWAITING_FEEDBACK:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Page {page_id} is '{page.status.value}', not 'awaiting_feedback'.",
+        raise ConflictError(
+            f"Page {page_id} is '{page.status.value}', not 'awaiting_feedback'.",
         )
 
     if body.decision == "approved":
@@ -123,7 +123,7 @@ def submit_page_review(
         db.commit()
         next_status = page.status
     else:
-        raise HTTPException(status_code=422, detail=f"Unknown decision '{body.decision}'.")
+        raise ValidationError(f"Unknown decision '{body.decision}'.")
 
     return PageReviewResponse(
         page_id=page.id, decision=body.decision,
@@ -155,12 +155,11 @@ def edit_chunk(
         .first()
     )
     if chunk is None:
-        raise HTTPException(status_code=404, detail=f"Chunk {chunk_id} not found.")
+        raise NotFoundError(f"Chunk {chunk_id} not found.")
 
     if chunk.page.status != PageStatus.AWAITING_FEEDBACK:
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=f"Cannot edit chunk {chunk_id}: page is '{chunk.page.status.value}'.",
+        raise ConflictError(
+            f"Cannot edit chunk {chunk_id}: page is '{chunk.page.status.value}'.",
         )
 
     changed = False
@@ -171,7 +170,7 @@ def edit_chunk(
                 chunk.review_status = ChunkReviewStatus.EDITED
                 changed = True
         else:
-            raise HTTPException(status_code=422, detail=f"Cannot set 'text' on a '{chunk.chunk_type.value}' chunk.")
+            raise ValidationError(f"Cannot set 'text' on a '{chunk.chunk_type.value}' chunk.")
     if body.excluded is not None and body.excluded != chunk.excluded:
         chunk.excluded = body.excluded
         changed = True

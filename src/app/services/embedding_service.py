@@ -1,11 +1,34 @@
 """Embedding Service — real implementation (Phase 6)."""
 
+import hashlib
 import logging
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 _model = None
 _ENC = "cl100k_base"
+
+# ──────────────────────────────────────────────────────────────────────
+# FR-37 reprocessing guard
+# ──────────────────────────────────────────────────────────────────────
+_embedded_hashes: set[str] = set()
+
+
+def _check_reembed_guard(texts: list[str]) -> None:
+    """Warn if any of *texts* was already embedded (FR-37 defense-in-depth).
+
+    Uses SHA-256 of the concatenated input to detect repeated calls with
+    identical content.  This is an in-memory guard; the authoritative
+    gatekeeper is the page status machine.
+    """
+    digest = hashlib.sha256("".join(texts).encode("utf-8")).hexdigest()
+    if digest in _embedded_hashes:
+        logger.warning(
+            "FR-37 guard: embed_texts called again with the same %d text(s) "
+            "(hash=%s...).",
+            len(texts), digest[:12],
+        )
+    _embedded_hashes.add(digest)
 
 
 def get_embedding_model():
@@ -27,6 +50,7 @@ def get_embedding_model():
 def embed_texts(texts: list[str]) -> list[list[float]]:
     if not texts:
         return []
+    _check_reembed_guard(texts)
     m = get_embedding_model()
     return [e.tolist() for e in m.encode(texts, batch_size=32, show_progress_bar=False)]
 

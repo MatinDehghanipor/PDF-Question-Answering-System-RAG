@@ -14,10 +14,11 @@ Error handling:
     - Empty history (brand-new user) -> zeros / empty list, never an error
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.exceptions import NotFoundError, ValidationError
 from app.deps import get_current_user
 from app.models.token_usage import TokenUsage
 from app.models.user import User
@@ -100,12 +101,9 @@ def get_usage_summary(
     """
     valid = {None, "day", "document"}
     if group_by not in valid:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=(
-                f"Unsupported group_by value '{group_by}'. "
-                f"Supported values: {sorted(valid - {None})}."
-            ),
+        raise ValidationError(
+            f"Unsupported group_by value '{group_by}'. "
+            f"Supported values: {sorted(valid - {None})}.",
         )
     result = get_summary(
         db=db,
@@ -138,10 +136,7 @@ def get_usage_for_query(
     """
     usage = get_query_usage(db, current_user.id, query_id)
     if usage is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Query {query_id} not found.",
-        )
+        raise NotFoundError(f"Query {query_id} not found.")
     return usage
 
 
@@ -167,8 +162,5 @@ def get_usage_for_page(
     """
     usage = get_page_usage(db, current_user.id, page_id)
     if usage is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Page {page_id} not found.",
-        )
+        raise NotFoundError(f"Page {page_id} not found.")
     return usage

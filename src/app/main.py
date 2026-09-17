@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api.routes import auth, documents, feedback, pages, queries, usage
 from app.core.config import settings
 from app.core.database import engine
+from app.core.exceptions import AppException, ConflictError, NotFoundError
 from app.core.logging_config import configure_logging, get_logger
 
 configure_logging()
@@ -124,6 +125,33 @@ app.add_middleware(
 
 
 # --- Global exception handling (foundation for FR-36) -----------------------
+@app.exception_handler(AppException)
+async def app_exception_handler(request: Request, exc: AppException) -> JSONResponse:
+    """Return a JSON body for every AppException subclass (FR-36, NFR-15).
+
+    Catches :class:`~app.core.exceptions.NotFoundError`,
+    :class:`~app.core.exceptions.ConflictError`,
+    :class:`~app.core.exceptions.ValidationError`, and
+    :class:`~app.core.exceptions.UpstreamServiceError` uniformly.
+
+    Logs at WARNING level for 4xx, ERROR level for 5xx.
+    """
+    if exc.status_code >= 500:
+        logger.exception(
+            "AppException (%d) on %s %s: %s",
+            exc.status_code, request.method, request.url.path, exc.detail,
+        )
+    else:
+        logger.warning(
+            "AppException (%d) on %s %s: %s",
+            exc.status_code, request.method, request.url.path, exc.detail,
+        )
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.error_code, "detail": exc.detail},
+    )
+
+
 @app.exception_handler(Exception)
 async def unhandled_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Return a sanitized 500 JSON body instead of leaking a traceback.

@@ -50,9 +50,18 @@ class TestSplitTextChunk:
     """Tests for ``embedding_service.split_text_chunk``."""
 
     def test_split_returns_subchunks_with_ordering(self):
-        from app.services.embedding_service import split_text_chunk
+        from app.services.embedding_service import should_split_chunk, split_text_chunk
 
-        long_text = "Paragraph one.\n\n" * 30 + "Paragraph two.\n\n" * 30
+        # The fixture must genuinely exceed CHUNK_SIZE_TOKENS: below that
+        # threshold split_text_chunk returns the text unsplit and this test
+        # would verify nothing.  Each "Paragraph one.\n\n" unit is ~4
+        # tokens, so this builds a text of roughly twice the chunk size.
+        repeats = settings.CHUNK_SIZE_TOKENS // 4 + 20
+        long_text = "Paragraph one.\n\n" * repeats + "Paragraph two.\n\n" * repeats
+        assert should_split_chunk(long_text), (
+            "fixture must exceed CHUNK_SIZE_TOKENS "
+            f"({settings.CHUNK_SIZE_TOKENS}) for this test to be meaningful"
+        )
         result = split_text_chunk(long_text, chunk_id=42, reading_order=3)
 
         assert len(result) > 1
@@ -76,11 +85,15 @@ class TestSplitTextChunk:
     def test_concatenated_subchunks_approximate_original(self):
         from app.services.embedding_service import split_text_chunk
 
-        text = " ".join(f"Sentence number {i}." for i in range(100))
+        # Long enough that the splitter really produces several sub-chunks
+        # (same fixture rationale as the ordering test above).
+        count = settings.CHUNK_SIZE_TOKENS // 4 + 20
+        text = " ".join(f"Sentence number {i}." for i in range(count))
         result = split_text_chunk(text, chunk_id=1, reading_order=0)
 
+        assert len(result) > 1, "fixture text was not split into sub-chunks"
         all_text = " ".join(sc["text"] for sc in result)
-        for i in range(100):
+        for i in range(count):
             assert f"Sentence number {i}." in all_text
 
 

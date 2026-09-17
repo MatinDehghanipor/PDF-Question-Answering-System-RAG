@@ -7,6 +7,8 @@ Covers:
       prompt (OD-6), not interleaved.
     - The document with the single highest-scoring (lowest-distance) chunk
       appears first (OD-6).
+    - Ties on that score are broken by ascending ``document_id`` so the
+      prompt is deterministic for a given result set (OD-6).
     - Empty retrieval returns an empty list without error.
     - k larger than available chunks returns all available.
 """
@@ -176,7 +178,10 @@ class TestRetrieveTopK:
 class TestPromptBuilder:
     """Tests for ``build_rag_prompt`` — chunk ordering in the prompt string."""
 
-    def _make_chunk(self, doc_id=1, filename="report.pdf", page=1, ro=0, sub=0, text="Text.") -> RetrievedChunk:
+    def _make_chunk(
+        self, doc_id=1, filename="report.pdf", page=1, ro=0, sub=0,
+        text="Text.", distance=0.5,
+    ) -> RetrievedChunk:
         return RetrievedChunk(
             chunk_id=f"chunk_{doc_id}_{ro}",
             document_id=doc_id,
@@ -187,7 +192,7 @@ class TestPromptBuilder:
             text_or_caption=text,
             reading_order=ro,
             sub_index=sub,
-            distance=0.5,
+            distance=distance,
         )
 
     def test_prompt_contains_all_chunks(self):
@@ -232,13 +237,15 @@ class TestPromptBuilder:
         from app.services.prompt_builder import build_rag_prompt
 
         chunks = [
-            self._make_chunk(doc_id=2, filename="B.pdf", ro=0, text="B1"),
-            self._make_chunk(doc_id=1, filename="A.pdf", ro=0, text="A1"),
-            self._make_chunk(doc_id=1, filename="A.pdf", ro=1, text="A2"),
+            # Deliberately unordered: B's chunk comes first and A's two
+            # chunks are reversed, while A.pdf owns the closest chunk.
+            self._make_chunk(doc_id=2, filename="B.pdf", ro=0, text="B1", distance=0.6),
+            self._make_chunk(doc_id=1, filename="A.pdf", ro=1, text="A2", distance=0.4),
+            self._make_chunk(doc_id=1, filename="A.pdf", ro=0, text="A1", distance=0.2),
         ]
         prompt = build_rag_prompt("q", chunks)
 
-        # Doc 1 (A.pdf) has lower min-distance, so appears first
+        # A.pdf has the lowest min-distance chunk (0.2), so its section is first
         a_section = prompt.index("--- Document: A.pdf ---")
         b_section = prompt.index("--- Document: B.pdf ---")
         a1_idx = prompt.index("A1")
@@ -257,3 +264,18 @@ class TestPromptBuilder:
         prompt = build_rag_prompt("q", [])
         assert "No relevant excerpts" in prompt
         assert "q" in prompt
+
+    def test_tied_documents_ordered_by_document_id(self):
+        """Equal best-chunk scores fall back to ascending document_id (OD-6)."""
+        from app.services.prompt_builder import build_rag_prompt
+
+        chunks = [
+            self._make_chunk(doc_id=7, filename="G.pdf", ro=0, text="G1", distance=0.3),
+            self._make_chunk(doc_id=3, filename="C.pdf", ro=0, text="C1", distance=0.3),
+        ]
+        prompt = build_rag_prompt("q", chunks)
+
+        # Equal minimum distances, so the lower document_id is presented first.
+        c_section = prompt.index("--- Document: C.pdf ---")
+        g_section = prompt.index("--- Document: G.pdf ---")
+        assert c_section < g_section

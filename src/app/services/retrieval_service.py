@@ -14,7 +14,10 @@ phase's code — only this module changes.
 [WORKING DEFAULT — OD-2]: k defaults to 5, clamped to [1, 20].
 [WORKING DEFAULT — OD-6]: Results grouped by document_id, ordered by
     highest-scoring (minimum-distance) chunk per document descending,
-    then by (page_number, reading_order, sub_index) ascending.
+    then by (page_number, reading_order, sub_index) ascending.  Equal
+    minimum distances are broken by ascending document_id so the
+    ordering is deterministic (and matches ``prompt_builder``, which
+    applies the same rule before assembling the prompt).
 """
 
 from __future__ import annotations
@@ -143,7 +146,11 @@ def retrieve_top_k(user_id: int, query_text: str, k: int) -> List[RetrievedChunk
     # chunk in that group — ascending because lower = more similar.
     sorted_doc_ids = sorted(
         doc_groups.keys(),
-        key=lambda did: min(c.distance for c in doc_groups[did]),
+        # Tie-break by ascending document_id: without it, equal-scoring
+        # documents would follow whatever order Chroma happened to return,
+        # and the prompt order could disagree with the source list built
+        # from this result.
+        key=lambda did: (min(c.distance for c in doc_groups[did]), did),
     )
 
     # Flatten into the final result list.

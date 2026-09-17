@@ -41,6 +41,13 @@ def build_rag_prompt(query_text: str, retrieved_chunks: List[RetrievedChunk]) ->
         :func:`llm_service.call_text_llm`.
 
     Note:
+        OD-6 ordering is *applied here* rather than assumed to arrive
+        already sorted from :func:`retrieval_service.retrieve_top_k`, so the
+        prompt stays correct even if a future re-ranker, a cache, or an
+        alternative retrieval back-end hands over chunks in a different
+        order.  The sort is idempotent for input that is already
+        OD-6-ordered.
+
         ``MAX_TOP_K`` is conservatively set at 20 and each chunk is ~500
         tokens, so the total prompt stays within typical LLM context windows
         without dynamic truncation.  If either bound is relaxed in the future,
@@ -54,16 +61,35 @@ def build_rag_prompt(query_text: str, retrieved_chunks: List[RetrievedChunk]) ->
             query_text=query_text,
         )
 
-    # 1. Group by document_id preserving OD-6 ordering (already ordered by
-    #    highest-similarity document first from retrieval_service).
+    # 1. Group by document_id (OD-6 step 1).
     doc_groups: OrderedDict[int, List[RetrievedChunk]] = OrderedDict()
     for c in retrieved_chunks:
         doc_groups.setdefault(c.document_id, []).append(c)
 
-    # 2. Build formatted string: one section per document, chunks in reading
-    #    order (already sorted within each group by retrieval_service).
+    # 2. Within each document group, sort by (page_number, reading_order,
+    #    sub_index) ascending: true reading order (OD-6 step 2 / FR-26),
+    #    reusing the metadata written at index time in Phase 6.
+    for doc_id in doc_groups:
+        doc_groups[doc_id].sort(
+            key=lambda c: (c.page_number, c.reading_order, c.sub_index)
+        )
+
+    # 3. Order the document groups by their highest-similarity chunk (OD-6
+    #    step 1: whichever document contributed the single most relevant
+    #    chunk is presented first).  Chroma distances are lower = more
+    #    similar, so ascending minimum distance; equal scores fall back to
+    #    ascending document_id so a given result set always yields the same
+    #    prompt.
+    ordered_doc_ids = sorted(
+        doc_groups.keys(),
+        key=lambda did: (min(c.distance for c in doc_groups[did]), did),
+    )
+
+    # 4. Build formatted string: one section per document group, its chunks
+    #    contiguous and in reading order.
     formatted_parts: List[str] = []
-    for doc_id, chunks in doc_groups.items():
+    for doc_id in ordered_doc_ids:
+        chunks = doc_groups[doc_id]
         filename = chunks[0].document_filename
         formatted_parts.append(f"--- Document: {filename} ---")
         for c in chunks:

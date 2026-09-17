@@ -188,7 +188,9 @@ class TestDeleteChunksByIds:
             ["keep_me", "delete_me"],
             [[0.0] * 384, [0.0] * 384],
             ["keep", "delete"],
-            [{}, {}],
+            # ChromaDB rejects empty metadata dicts, so mirror what the
+            # chunker always writes in production at index time.
+            [{"document_id": 10}, {"document_id": 10}],
         )
 
         delete_chunks_by_ids(uid, ["delete_me"])
@@ -296,20 +298,24 @@ class TestTopKSearch:
         uid = 9202
         self._cleanup(uid)
 
-        # Insert chunks: second is closer to query
+        # The collection uses cosine distance, which only looks at the
+        # DIRECTION of the vectors: two uniform positive vectors point the
+        # same way and would tie at distance 0, so the two chunks must point
+        # in different directions for this test to mean anything.
         upsert_chunks(
             uid,
             ["far", "close"],
-            [[0.9] * 384, [0.1] * 384],
+            [[0.1, 0.9] * 192, [0.95, 0.05] * 192],
             ["Far chunk", "Close chunk"],
-            [{}, {}],
+            [{"document_id": 1}, {"document_id": 1}],
         )
 
-        query_vec = [0.1] * 384
+        query_vec = [1.0, 0.0] * 192
         results = top_k_search(uid, query_vec, k=2)
 
         assert len(results) == 2
-        # "close" (distance near 0) should be first
+        # "close" points almost the same way as the query (distance ~0.001),
+        # "far" is nearly orthogonal (distance ~0.89): "close" must be first.
         assert results[0]["chunk_id"] == "close"
         assert results[0]["distance"] <= results[1]["distance"]
 
@@ -319,7 +325,7 @@ class TestTopKSearch:
         uid = 9203
         self._cleanup(uid)
 
-        upsert_chunks(uid, ["only_one"], [[0.5] * 384], ["Solo"], [{}])
+        upsert_chunks(uid, ["only_one"], [[0.5] * 384], ["Solo"], [{"document_id": 1}])
 
         query_vec = [0.5] * 384
         results = top_k_search(uid, query_vec, k=10)
@@ -333,8 +339,8 @@ class TestTopKSearch:
         self._cleanup(uid_a)
         self._cleanup(uid_b)
 
-        upsert_chunks(uid_a, ["a_only"], [[0.1] * 384], ["User A"], [{}])
-        upsert_chunks(uid_b, ["b_only"], [[0.9] * 384], ["User B"], [{}])
+        upsert_chunks(uid_a, ["a_only"], [[0.1] * 384], ["User A"], [{"document_id": 11}])
+        upsert_chunks(uid_b, ["b_only"], [[0.9] * 384], ["User B"], [{"document_id": 12}])
 
         query_vec = [0.1] * 384
         results_a = top_k_search(uid_a, query_vec, k=5)

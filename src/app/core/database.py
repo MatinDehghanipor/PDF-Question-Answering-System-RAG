@@ -45,6 +45,10 @@ class Base(DeclarativeBase):
 def get_db() -> Generator[Session, None, None]:
     """FastAPI dependency that yields a database session and closes it afterwards.
 
+    Ensures that any uncommitted transaction is rolled back before the session
+    is closed, preventing "database is locked" errors when the same engine is
+    used from multiple tests or request handlers in quick succession.
+
     Yields:
         Session: a SQLAlchemy ORM session bound to the configured database.
     """
@@ -52,4 +56,5 @@ def get_db() -> Generator[Session, None, None]:
     try:
         yield db
     finally:
+        db.rollback()  # roll back any uncommitted/ failed transaction
         db.close()

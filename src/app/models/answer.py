@@ -32,6 +32,8 @@ class Answer(Base):
     )
     generated_text: Mapped[str] = mapped_column(Text, nullable=False)
     source_chunk_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
+    # Raw Mode stores the selected document ids here (no chunk retrieval).
+    source_document_ids: Mapped[list[int] | None] = mapped_column(JSON, nullable=True)
     llm_model_version: Mapped[str] = mapped_column(Text, nullable=False)
 
     # Relationship (string reference avoids circular imports)

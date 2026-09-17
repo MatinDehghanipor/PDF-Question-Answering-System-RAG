@@ -68,5 +68,7 @@ class AnswerOut(BaseModel):
     mode: str = "rag"
     sources: List[SourceRef] = []
     source_chunk_ids: Optional[List[int]] = None
+    source_document_ids: Optional[List[int]] = None
     llm_model_version: str
     token_usage: Optional[TokenUsageOut] = None
+

@@ -18,12 +18,16 @@ class QueryCreate(BaseModel):
         text: The natural-language question.
         mode: rag (default) or raw.
         k_value: Optional top-k override; validated against
-            settings.MIN_TOP_K/MAX_TOP_K in Phase 7.
+            settings.MIN_TOP_K/MAX_TOP_K in Phase 7; None for Raw Mode.
+        document_ids: Required when ``mode="raw"`` — list of document ids
+            to send to the LLM directly.  Ignored (and may be None) when
+            ``mode="rag"``.
     """
 
     text: str = Field(min_length=1)
     mode: QueryMode = QueryMode.RAG
     k_value: int | None = Field(default=None, ge=1)
+    document_ids: list[int] | None = Field(default=None)
 
 
 class QueryOut(BaseModel):

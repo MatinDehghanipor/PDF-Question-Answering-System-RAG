@@ -234,6 +234,82 @@ def call_text_llm(prompt: str, model: str) -> LLMCallResult:
 
 
 # ══════════════════════════════════════════════════════════════════════
+
+def call_text_llm_with_files(
+    prompt: str,
+    file_paths: list[str],
+    model: str,
+) -> LLMCallResult:
+    """Send a text prompt plus original PDF file(s) directly to the LLM (Raw Mode).
+
+    Uploads each file at *file_paths* to the LLM provider, then sends the
+    prompt + uploaded file references as a single content request.  No chunking,
+    retrieval, or other preprocessing is performed (FR-28).
+
+    Token usage is read from the API response's ``usage_metadata`` field when
+    available, following the same pattern as :func:`call_text_llm`.
+
+    [WORKING DEFAULT — OD-7]: size/page-count limits are enforced **before**
+    this function is called, in the endpoint layer.  This function does not
+    apply additional truncation — if the combined file content exceeds the
+    model's context window, the provider returns an error that surfaces as a
+    502 to the user.
+
+    Args:
+        prompt: The user's question (no chunk context, unlike RAG Mode).
+        file_paths: Absolute paths to the original PDF file(s) on disk.
+        model: Model identifier (e.g. ``gemini-2.0-flash`` from
+            ``settings.LLM_ANSWER_MODEL``).
+
+    Returns:
+        LLMCallResult with response text and token counts.
+
+    Raises:
+        RuntimeError: If the API call fails, API key is missing, or file
+            upload to the provider fails.
+    """
+    try:
+        import google.genai as genai
+    except ImportError:
+        raise RuntimeError(
+            "google-generativeai SDK not installed. Install via: pip install google-generativeai"
+        )
+
+    import os
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise RuntimeError("GEMINI_API_KEY environment variable not set.")
+
+    client = genai.Client(api_key=api_key)
+
+    # ── Upload files to the LLM provider ────────────────────────────
+    uploaded_files = []
+    try:
+        for fp in file_paths:
+            uploaded_file = client.files.upload(file=fp)
+            uploaded_files.append(uploaded_file)
+    except Exception as exc:
+        raise RuntimeError(f"Failed to upload file for Raw Mode query: {exc}") from exc
+
+    # ── Build content list: prompt text followed by uploaded file refs ─
+    contents: list[str | object] = [prompt]
+    contents.extend(uploaded_files)
+
+    # ── Send to LLM ──────────────────────────────────────────────────
+    try:
+        response = client.models.generate_content(model=model, contents=contents)
+    except Exception as exc:
+        raise RuntimeError(f"Gemini API call (with files) failed: {exc}") from exc
+
+    text = response.text or ""
+    pt = None
+    ct = None
+    if hasattr(response, "usage_metadata") and response.usage_metadata:
+        pt = getattr(response.usage_metadata, "prompt_token_count", None)
+        ct = getattr(response.usage_metadata, "candidates_token_count", None)
+
+    return LLMCallResult(text=text, prompt_tokens=pt, completion_tokens=ct)
+
 # Internal helpers
 # ══════════════════════════════════════════════════════════════════════
 

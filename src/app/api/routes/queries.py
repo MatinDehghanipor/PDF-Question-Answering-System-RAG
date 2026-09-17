@@ -1,14 +1,15 @@
-"""Query API routes — RAG Mode (Phase 7).
+"""Query API routes — RAG Mode (Phase 7) and Raw Mode (Phase 8).
 
-Implements the ``POST /query`` endpoint for RAG Mode (retrieval-augmented
-generation via top-k vector search + LLM answer).  Raw Mode will be added
-in Phase 8.
+Implements the ``POST /query`` endpoint for both RAG Mode (retrieval-augmented
+generation via top-k vector search + LLM answer) and Raw Mode (original PDF
+sent directly to the LLM with zero preprocessing per FR-28).
 """
 
 from __future__ import annotations
 
 import logging
 
+from pathlib import Path as _Path  # avoid shadowing the import
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -30,7 +31,215 @@ from app.services.token_tracker import record_token_usage
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/query", tags=["query"])
+# ─────────────────────────────────────────────────────────────────────────────
+# OD-7 size/page-limit enforcement
+# ─────────────────────────────────────────────────────────────────────────────
+# [WORKING DEFAULT — OD-7]: REJECT (do not silently truncate).  Checking
+# the combined selected-file size and page count before sending to the LLM
+# prevents silently dropping content the user assumes is fully considered.
+# Truncation would be actively misleading — the LLM could respond to only
+# part of the input with no indication that content was dropped.  A warning-
+# only approach was rejected for the same reason.  If this proves too strict
+# in practice, ``RAW_MODE_MAX_FILE_MB`` and ``RAW_MODE_MAX_PAGES`` are each
+# a single config value to raise without code changes (NFR-25).
 
+
+def _check_raw_mode_limits(file_sizes_mb: list[float], total_pages: int) -> None:
+    """Raise 413 if OD-7 limits would be exceeded.
+
+    Args:
+        file_sizes_mb: List of file sizes in megabytes (each PDF).
+        total_pages: Sum of page counts across all selected documents.
+
+    Raises:
+        HTTPException (413): If total file size or total page count exceeds
+            the configured limit, with a message identifying which limit was
+            hit.
+    """
+    total_mb = sum(file_sizes_mb)
+    if total_mb > settings.RAW_MODE_MAX_FILE_MB:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Total file size ({total_mb:.1f} MB) exceeds Raw Mode maximum "
+                f"({settings.RAW_MODE_MAX_FILE_MB} MB).  Please select fewer or "
+                f"smaller files, or use RAG Mode instead."
+            ),
+        )
+    if total_pages > settings.RAW_MODE_MAX_PAGES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=(
+                f"Total page count ({total_pages}) exceeds Raw Mode maximum "
+                f"({settings.RAW_MODE_MAX_PAGES} pages).  Please select fewer or "
+                f"shorter files, or use RAG Mode instead."
+            ),
+        )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Raw Mode handler
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _handle_raw_mode(
+    body: QueryCreate,
+    db: Session,
+    current_user: User,
+) -> AnswerOut:
+    """Run a Raw Mode query (FR-28 through FR-33).
+
+    Flow (UC10/SDD §6.2):
+        1. Validate ``document_ids`` present and owned by the user.
+        2. Apply OD-7 size/page limits across the selected files.
+        3. Create a ``Query`` row with ``mode=raw`` and ``k_value=None``.
+        4. Call ``call_text_llm_with_files`` (no chunking/retrieval).
+        5. Create an ``Answer`` row with ``source_chunk_ids=None`` and
+           ``source_document_ids=[...]``.
+        6. Record token usage.
+        7. Return ``AnswerOut`` with ``mode=\\"raw\\"``, source filenames only
+           (no page granularity per FR-30), and token counts.
+
+    Error handling:
+        - ``document_ids`` empty or absent → 422.
+        - Any document id not owned by the current user → 404 (never leak
+          another user's document existence).
+        - OD-7 limit exceeded → 413.
+        - LLM call fails → 502; Query row persisted, no Answer row.
+
+    Note:
+        Unlike RAG Mode's UC4 precondition, Raw Mode does **not** require
+        documents to be ``ready``.  Per FR-28's wording ("selected PDF file(s)"
+        with no preprocessing), any non-discarded document owned by the user
+        may be used.
+    """
+    # ── Validate document_ids ──────────────────────────────────────────
+    if not body.document_ids:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="document_ids is required when mode='raw' and must be a non-empty list.",
+        )
+
+    doc_ids = body.document_ids
+
+    # Fetch selected documents belonging to this user (any status except
+    # discarded — Raw Mode doesn't require Ready per FR-28).
+    documents = (
+        db.query(Document)
+        .filter(
+            Document.id.in_(doc_ids),
+            Document.user_id == current_user.id,
+            Document.status != DocumentStatus.DISCARDED,
+        )
+        .all()
+    )
+
+    if len(documents) != len(doc_ids):
+        found_ids = {d.id for d in documents}
+        missing = [did for did in doc_ids if did not in found_ids]
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Document(s) with id(s) {missing} not found or not accessible.",
+        )
+
+    # ── OD-7 limit checks ──────────────────────────────────────────────
+    file_sizes_mb: list[float] = []
+    total_pages = 0
+    for doc in documents:
+        pdf_path = _Path(settings.FILE_STORAGE_PATH) / str(current_user.id) / f"{doc.id}.pdf"
+        if not pdf_path.exists():
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=f"File for document {doc.id} ('{doc.filename}') is missing from storage.",
+            )
+        file_size_mb = pdf_path.stat().st_size / (1024 * 1024)
+        file_sizes_mb.append(file_size_mb)
+        total_pages += doc.page_count or 0
+
+    _check_raw_mode_limits(file_sizes_mb, total_pages)
+
+    # ── Create Query row ───────────────────────────────────────────────
+    db_query = QueryModel(
+        user_id=current_user.id,
+        text=body.text,
+        k_value=None,  # No retrieval in Raw Mode.
+        mode=QueryMode.RAW,
+    )
+    db.add(db_query)
+    db.flush()
+
+    # ── Build file path list and call the LLM ──────────────────────────
+    file_paths = [
+        str(_Path(settings.FILE_STORAGE_PATH) / str(current_user.id) / f"{doc.id}.pdf")
+        for doc in documents
+    ]
+
+    try:
+        llm_result = llm_svc.call_text_llm_with_files(
+            body.text, file_paths, settings.LLM_ANSWER_MODEL
+        )
+    except Exception as exc:
+        logger.error("Raw Mode LLM call failed for query %d: %s", db_query.id, exc)
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Raw Mode LLM answer generation failed: {exc}",
+        )
+
+    # ── Sources: filenames only (no page granularity in Raw Mode) ─────
+    sources = [
+        SourceRef(document_filename=doc.filename, page_number=0)
+        for doc in documents
+    ]
+
+    source_document_ids = [doc.id for doc in documents]
+
+    # ── Create Answer row ──────────────────────────────────────────────
+    answer = Answer(
+        query_id=db_query.id,
+        generated_text=llm_result.text,
+        source_chunk_ids=None,  # No chunks in Raw Mode.
+        source_document_ids=source_document_ids,
+        llm_model_version=settings.LLM_ANSWER_MODEL,
+    )
+    db.add(answer)
+    db.flush()
+
+    # ── Record token usage (FR-33) ─────────────────────────────────────
+    pt = llm_result.prompt_tokens or 0
+    ct = llm_result.completion_tokens or 0
+    record_token_usage(
+        db=db,
+        user_id=current_user.id,
+        context_type=TokenUsageContextType.QUERY,
+        context_id=answer.id,
+        model_used=settings.LLM_ANSWER_MODEL,
+        prompt_tokens=pt,
+        completion_tokens=ct,
+    )
+
+    db.commit()
+    db.refresh(answer)
+
+    logger.info(
+        "Query %d answered (Raw, %d documents, prompt=%d, completion=%d).",
+        db_query.id, len(documents), pt, ct,
+    )
+
+    return AnswerOut(
+        id=answer.id,
+        query_id=answer.query_id,
+        generated_text=answer.generated_text,
+        mode="raw",
+        sources=sources,
+        source_chunk_ids=None,
+        source_document_ids=source_document_ids,
+        llm_model_version=answer.llm_model_version,
+        token_usage=TokenUsageOut(
+            prompt_tokens=pt,
+            completion_tokens=ct,
+            total_tokens=pt + ct,
+        ),
+    )
 
 @router.post("/", response_model=AnswerOut)
 def ask_question(
@@ -79,11 +288,7 @@ def ask_question(
 
     # ── Mode dispatch ──────────────────────────────────────────────────
     if body.mode == QueryMode.RAW:
-        # Raw Mode is Phase 8.
-        raise HTTPException(
-            status_code=status.HTTP_501_NOT_IMPLEMENTED,
-            detail="Raw Mode is not yet implemented (Phase 8).",
-        )
+        return _handle_raw_mode(body, db, current_user)
 
     # ── UC4 precondition: at least one Ready document ──────────────────
     ready_count = (

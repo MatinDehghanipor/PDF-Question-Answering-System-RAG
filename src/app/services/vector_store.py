@@ -13,6 +13,8 @@ ChromaDB's default HNSW index satisfies NFR-9 (sub-linear approximate
 nearest neighbor search) out of the box.
 """
 
+from __future__ import annotations
+
 import logging
 from pathlib import Path
 

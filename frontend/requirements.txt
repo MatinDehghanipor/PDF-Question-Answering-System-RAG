@@ -1,0 +1,11 @@
+# Frontend dependencies — PDF QA System (Phase 12 Streamlit client)
+#
+# ⚠ IMPORTANT: pin streamlit==1.50.0  because later versions (≥1.51) pull
+# starlette>=0.46, which conflicts with FastAPI 0.115.x (requires starlette
+# <0.46).  Keeping both the backend and frontend in one Python environment
+# requires this pin.  If you use separate virtual environments (recommended
+# for production), you can safely upgrade streamlit.
+
+streamlit==1.50.0
+
+requests==2.34.2

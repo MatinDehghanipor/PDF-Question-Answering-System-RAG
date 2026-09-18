@@ -17,6 +17,7 @@ st.set_page_config(page_title="Token Usage", page_icon="📊")
 st.title("📊 Token Usage")
 
 uh.require_login()
+_TOKEN = st.session_state["token"]
 uh.sidebar_identity()
 uh.show_flash()
 
@@ -34,7 +35,7 @@ group_by = st.selectbox(
     format_func=lambda v: "— no grouping (grand totals)" if v is None else f"By {v}",
 )
 
-summary = uh.handle_api_call(api.get_usage_summary, group_by=group_by)
+summary = uh.handle_api_call(api.get_usage_summary, _TOKEN, group_by=group_by)
 if summary is None:
     st.info("Could not fetch usage summary — backend may be down or you have no usage yet.")
 else:
@@ -87,7 +88,7 @@ else:
 
 st.subheader("Individual Records")
 
-records = uh.handle_api_call(api.list_usage, skip=0, limit=200)
+records = uh.handle_api_call(api.list_usage, _TOKEN, skip=0, limit=200)
 if records is None:
     st.info("Could not fetch usage records from the backend.")
 elif not records:
@@ -126,13 +127,13 @@ else:
                                   }[t])
     if st.button("Show detail", use_container_width=True, key="drill_btn"):
         if drill_type == "query":
-            detail = uh.handle_api_call(api.get_query_usage, drill_id)
+            detail = uh.handle_api_call(api.get_query_usage, _TOKEN, drill_id)
             if detail:
                 st.json(detail)
             else:
                 st.info(f"No usage records for query id={drill_id}.")
         elif drill_type == "page":
-            detail = uh.handle_api_call(api.get_page_usage, drill_id)
+            detail = uh.handle_api_call(api.get_page_usage, _TOKEN, drill_id)
             if detail:
                 st.json(detail)
             else:

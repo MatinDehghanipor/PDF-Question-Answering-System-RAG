@@ -25,6 +25,7 @@ st.set_page_config(page_title="Page Review", page_icon="🔍")
 st.title("🔍 Page Review")
 
 uh.require_login()
+_TOKEN = st.session_state["token"]
 uh.sidebar_identity()
 uh.show_flash()
 
@@ -37,7 +38,7 @@ _SZ = st.session_state
 doc_id: int | None = _SZ.get("selected_document_id")
 
 if not doc_id:
-    docs_resp = uh.handle_api_call(api.list_documents)
+    docs_resp = uh.handle_api_call(api.list_documents, _TOKEN)
     if docs_resp is None or not docs_resp.get("items"):
         st.info("No documents available — upload one first.")
         st.stop()
@@ -61,7 +62,7 @@ PAGE_CACHE_KEY = f"_review_pages_{doc_id}"
 
 def _fetch_pages() -> list[dict]:
     """GET /documents/{doc_id}/pages and cache in session_state."""
-    resp = uh.handle_api_call(api.get_document_pages, doc_id)
+    resp = uh.handle_api_call(api.get_document_pages, _TOKEN, doc_id)
     if resp is not None:
         _SZ[PAGE_CACHE_KEY] = resp
     return _SZ.get(PAGE_CACHE_KEY, [])
@@ -99,7 +100,7 @@ def _save_pending_edits(page: dict) -> None:
         if ev is not None and ev != chunk.get("excluded"):
             edits["excluded"] = ev
         if edits:
-            uh.handle_api_call(api.patch_chunk, cid, **edits)
+            uh.handle_api_call(api.patch_chunk, _TOKEN, cid, **edits)
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -109,7 +110,7 @@ def _save_pending_edits(page: dict) -> None:
 
 def _do_approve_all() -> None:
     """POST /documents/{doc_id}/approve-all with confirmation."""
-    resp = uh.handle_api_call(api.approve_all, doc_id)
+    resp = uh.handle_api_call(api.approve_all, _TOKEN, doc_id)
     if resp is not None:
         msg = resp.get("message", "")
         st.toast(f"✅ {msg}", icon="📄")
@@ -125,7 +126,7 @@ def _do_approve_all() -> None:
 def _do_approve_page(page: dict) -> None:
     """Save pending edits for this page, then approve (FR-12)."""
     _save_pending_edits(page)
-    resp = uh.handle_api_call(api.submit_page_review, page["id"], "approved")
+    resp = uh.handle_api_call(api.submit_page_review, _TOKEN, page["id"], "approved")
     if resp is not None:
         st.toast(f"Page {page['page_number']} approved.", icon="✅")
         _invalidate_cache()
@@ -134,7 +135,7 @@ def _do_approve_page(page: dict) -> None:
 
 def _do_mark_unsatisfied(page_id: int, note: str | None = None) -> None:
     """Mark a page unsatisfactory (Round 1 -> LLM Review; Round 2 -> discard)."""
-    resp = uh.handle_api_call(api.submit_page_review, page_id, "unsatisfied", note)
+    resp = uh.handle_api_call(api.submit_page_review, _TOKEN, page_id, "unsatisfied", note)
     if resp is not None:
         next_status = resp.get("next_status", "")
         if next_status == "discarded":

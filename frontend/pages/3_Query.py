@@ -18,6 +18,7 @@ st.set_page_config(page_title="Ask a Question", page_icon="❓")
 st.title("❓ Ask a Question")
 
 uh.require_login()
+_TOKEN = st.session_state["token"]
 uh.sidebar_identity()
 uh.show_flash()
 
@@ -75,7 +76,7 @@ else:
         "without being chunked or indexed (FR-28).  "
         "⚠️ Raw Mode may take **longer** and cost **more tokens** than RAG Mode (NFR-6)."
     )
-    docs_resp = uh.handle_api_call(api.list_documents)
+    docs_resp = uh.handle_api_call(api.list_documents, _TOKEN)
     ready_docs = [d for d in (docs_resp.get("items") if docs_resp else []) if d.get("status") == "ready"]
     if not ready_docs:
         st.warning(
@@ -118,7 +119,7 @@ if st.button("🤖 Ask", type="primary", use_container_width=True):
             else "Retrieving chunks and generating answer…"
         ):
             result = uh.handle_api_call(
-                api.submit_query,
+                api.submit_query, _TOKEN,
                 text=question.strip(),
                 mode=mode,
                 k_value=k_value if mode == "rag" else None,
@@ -186,7 +187,7 @@ for entry in _SZ["query_history"]:
         )
         if st.button("Submit feedback", key=f"fb_submit_{a['id']}", use_container_width=True):
             resp = uh.handle_api_call(
-                api.submit_feedback,
+                api.submit_feedback, _TOKEN,
                 answer_id=a["id"],
                 rating=fb_rating,
                 comment=fb_comment or None,

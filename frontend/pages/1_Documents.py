@@ -28,6 +28,7 @@ st.set_page_config(page_title="Documents", page_icon="📄")
 st.title("📄 Documents")
 
 uh.require_login()
+_TOKEN = st.session_state["token"]
 uh.sidebar_identity()
 uh.show_flash()
 
@@ -43,7 +44,7 @@ _SZ = st.session_state
 
 def _refresh_doc_list() -> None:
     """Fetch ``GET /documents`` and cache the result in session_state."""
-    docs = uh.handle_api_call(api.list_documents)
+    docs = uh.handle_api_call(api.list_documents, _TOKEN)
     if docs is not None and isinstance(docs, dict):
         _SZ["documents"] = docs.get("items", [])
     else:
@@ -91,7 +92,7 @@ if st.button("📤 Upload", type="primary", use_container_width=True, key="uploa
             )
         else:
             files_data = [(f.name, f.read()) for f in uploaded_files]
-            result = uh.handle_api_call(api.upload_documents_bytes, files_data)
+            result = uh.handle_api_call(api.upload_documents_bytes, _TOKEN, files_data)
             if result is not None:
                 _SZ["upload_results"] = result
                 _SZ["last_upload_names"] = ", ".join(f[0] for f in files_data)
@@ -170,7 +171,7 @@ for doc in docs:
         with col_conf:
             if st.button("Yes, delete", key=f"confirm_yes_{did}", type="primary",
                          use_container_width=True):
-                result = uh.handle_api_call(api.delete_document, did)
+                result = uh.handle_api_call(api.delete_document, _TOKEN, did)
                 if result is not None:
                     st.toast(f"Deleted: {filename}", icon="🗑️")
                     _SZ[f"confirm_del_{did}"] = False

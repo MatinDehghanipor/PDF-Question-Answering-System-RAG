@@ -73,8 +73,10 @@ class Settings(BaseSettings):
 
     # --- LLMs (used starting Phases 5, 7, 8) ---
     # [WORKING DEFAULT — OD-12]: same model for answering and review.
-    LLM_ANSWER_MODEL: str = "gemini-2.0-flash"
-    LLM_REVIEW_MODEL: str = "gemini-2.0-flash"
+    # NOTE: gemini-2.0-flash was retired by Google; gemini-3.6-flash is the
+    # current recommended flash model (verified against the live API 2026-09).
+    LLM_ANSWER_MODEL: str = "gemini-3.6-flash"
+    LLM_REVIEW_MODEL: str = "gemini-3.6-flash"
 
     # --- Raw Mode (used starting Phase 8) ---
     # [WORKING DEFAULT — OD-7]: max 50 MB per PDF and max 100 pages in Raw Mode.

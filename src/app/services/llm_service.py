@@ -10,12 +10,20 @@ vision LLM (OD-12: separate configurable model).  Exposes
 
 import json
 import logging
+import os
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
+from app.core.config import PROJECT_ROOT, settings
+
+# GEMINI_API_KEY is read via os.getenv() in the call functions below, but
+# pydantic-settings only loads .env into ``settings`` — it does not export to
+# ``os.environ``.  Load the project .env explicitly so the key in src/.env is
+# visible (python-dotenv never overrides already-set environment variables).
+load_dotenv(PROJECT_ROOT / ".env")
 from app.models.chunk import Chunk
 from app.models.enums import (
     ChunkReviewStatus,

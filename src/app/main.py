@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from app.api.routes import auth, documents, feedback, pages, queries, usage
+from app.api.routes import auth, config, documents, feedback, pages, queries, usage
 from app.core.config import settings
 from app.core.database import engine
 from app.core.exceptions import AppException, ConflictError, NotFoundError
@@ -199,6 +199,7 @@ def health() -> dict[str, str]:
 
 # --- Routers -----------------------------------------------------------------
 app.include_router(auth.router)
+app.include_router(config.router)
 app.include_router(documents.router)
 app.include_router(pages.router)
 app.include_router(queries.router)

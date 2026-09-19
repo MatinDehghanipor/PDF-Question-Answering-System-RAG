@@ -224,7 +224,7 @@ class TestPerQuery:
     async def test_valid_query(self) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             headers, _doc_id, query_resp = await _setup_user_and_query(client, f"{_SUFFIX}_query")
-            query_id = query_resp["id"]
+            query_id = query_resp["query_id"]
             resp = await client.get(f"/usage/queries/{query_id}", headers=headers)
             assert resp.status_code == 200
             data = resp.json()
@@ -239,7 +239,7 @@ class TestPerQuery:
     async def test_other_users_query_returns_404(self) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             headers, _doc_id, query_resp = await _setup_user_and_query(client, f"{_SUFFIX}_q404")
-            query_id = query_resp["id"]
+            query_id = query_resp["query_id"]
             user2_headers = await _setup_user(client, f"{_SUFFIX}_q404_other")
             resp = await client.get(f"/usage/queries/{query_id}", headers=user2_headers)
             assert resp.status_code == 404
@@ -447,7 +447,7 @@ class TestRawMode:
     async def test_raw_query_creates_usage(self) -> None:
         async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
             headers, _doc_id, query_resp = await _setup_user_and_raw_query(client, f"{_SUFFIX}_raw")
-            query_id = query_resp["id"]
+            query_id = query_resp["query_id"]
             resp = await client.get(f"/usage/queries/{query_id}", headers=headers)
             assert resp.status_code == 200
             data = resp.json()

@@ -15,7 +15,14 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.exceptions import AppException, NotFoundError, UpstreamServiceError, ValidationError
+from app.core.exceptions import (
+    AppException,
+    BadRequestError,
+    NotFoundError,
+    PayloadTooLargeError,
+    UpstreamServiceError,
+    ValidationError,
+)
 from app.deps import get_current_user
 from app.models.answer import Answer
 from app.models.document import Document
@@ -59,13 +66,13 @@ def _check_raw_mode_limits(file_sizes_mb: list[float], total_pages: int) -> None
     """
     total_mb = sum(file_sizes_mb)
     if total_mb > settings.RAW_MODE_MAX_FILE_MB:
-        raise ValidationError(
+        raise PayloadTooLargeError(
             f"Total file size ({total_mb:.1f} MB) exceeds Raw Mode maximum "
             f"({settings.RAW_MODE_MAX_FILE_MB} MB).  Please select fewer or "
             f"smaller files, or use RAG Mode instead.",
         )
     if total_pages > settings.RAW_MODE_MAX_PAGES:
-        raise ValidationError(
+        raise PayloadTooLargeError(
             f"Total page count ({total_pages}) exceeds Raw Mode maximum "
             f"({settings.RAW_MODE_MAX_PAGES} pages).  Please select fewer or "
             f"shorter files, or use RAG Mode instead.",
@@ -282,7 +289,7 @@ def ask_question(
         .count()
     )
     if ready_count == 0:
-        raise ValidationError(
+        raise BadRequestError(
             "No Ready documents found. Please upload and get at least one "
             "document fully approved before asking a question.",
         )

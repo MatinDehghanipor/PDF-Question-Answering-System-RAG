@@ -40,6 +40,20 @@ class ValidationError(AppException):
     error_code: str = "validation_error"
 
 
+class BadRequestError(AppException):
+    """Maps to 400 Bad Request -- request is syntactically valid but semantically empty/invalid."""
+
+    status_code: int = 400
+    error_code: str = "bad_request"
+
+
+class PayloadTooLargeError(AppException):
+    """Maps to 413 Payload Too Large -- OD-7 Raw Mode size/page-limit exceeded."""
+
+    status_code: int = 413
+    error_code: str = "payload_too_large"
+
+
 class NotFoundError(AppException):
     """Maps to 404 Not Found -- entity does not exist or not owned by user."""
 

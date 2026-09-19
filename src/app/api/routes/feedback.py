@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.exceptions import NotFoundError, ValidationError
+from app.core.exceptions import BadRequestError, NotFoundError
 from app.deps import get_current_user
 from app.models.user import User
 from app.schemas.feedback import FeedbackOut, FeedbackRequest
@@ -64,7 +64,7 @@ def create_feedback(
             comment=body.comment,
         )
     except EmptyFeedbackError as exc:
-        raise ValidationError(str(exc)) from exc
+        raise BadRequestError(str(exc)) from exc
     except AnswerNotFoundError as exc:
         raise NotFoundError(str(exc)) from exc
 

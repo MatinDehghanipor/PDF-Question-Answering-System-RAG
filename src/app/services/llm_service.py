@@ -141,6 +141,58 @@ class LLMCallResult:
         self.completion_tokens = completion_tokens
 
 
+# ── Transient-error retry (provider throttling) ─────────────────────────
+# gemini-3.x-flash intermittently returns 503 UNAVAILABLE / 429
+# RESOURCE_EXHAUSTED under load.  These are transient — retry with backoff
+# instead of surfacing an immediate 502 to the user.
+_RETRYABLE_MARKERS = ("503", "429", "UNAVAILABLE", "RESOURCE_EXHAUSTED", "500", "INTERNAL")
+
+
+def _generate_with_retries(
+    generate,
+    contents,
+    *,
+    label: str,
+    attempts: int = 3,
+    base_delay: float = 2.0,
+):
+    """Call ``generate(contents=...)`` retrying transient provider errors.
+
+    Args:
+        generate: Callable accepting a ``contents`` keyword argument.
+        contents: The content payload for the call.
+        label: Human-readable operation name for log/error messages.
+        attempts: Maximum number of attempts (default 3 = 1 try + 2 retries).
+        base_delay: Base delay in seconds; doubles each attempt.
+
+    Returns:
+        The successful ``generate`` response.
+
+    Raises:
+        RuntimeError: If all attempts fail (re-raises the last error).
+    """
+    import time
+
+    last_exc: Exception | None = None
+    for attempt in range(attempts):
+        try:
+            return generate(contents=contents)
+        except Exception as exc:
+            last_exc = exc
+            msg = str(exc)
+            transient = any(marker in msg for marker in _RETRYABLE_MARKERS)
+            if transient and attempt < attempts - 1:
+                delay = base_delay * (2 ** attempt)
+                logger.warning(
+                    "%s: transient provider error (%s) — retrying in %.0fs "
+                    "(attempt %d/%d)", label, msg[:150], delay, attempt + 1, attempts,
+                )
+                time.sleep(delay)
+                continue
+            break
+    raise RuntimeError(f"{label} failed: {last_exc}") from last_exc
+
+
 def call_vision_llm(image_bytes: bytes, prompt: str, model: str) -> LLMCallResult:
     """Send a page image and extraction prompt to a vision-capable LLM.
 
@@ -150,7 +202,7 @@ def call_vision_llm(image_bytes: bytes, prompt: str, model: str) -> LLMCallResul
     Args:
         image_bytes: PNG image bytes.
         prompt: Extraction prompt (OD-11 template).
-        model: Model identifier (e.g. ``gemini-2.0-flash``).
+        model: Model identifier (e.g. ``gemini-3.6-flash``).
 
     Returns:
         LLMCallResult with response text and token counts.
@@ -173,9 +225,13 @@ def call_vision_llm(image_bytes: bytes, prompt: str, model: str) -> LLMCallResul
     image_data_uri = f"data:image/png;base64,{b64}"
 
     try:
-        response = client.models.generate_content(model=model, contents=[prompt, image_data_uri])
-    except Exception as exc:
-        raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+        response = _generate_with_retries(
+            lambda contents: client.models.generate_content(model=model, contents=contents),
+            [prompt, image_data_uri],
+            label="Gemini API call",
+        )
+    except RuntimeError:
+        raise
 
     text = response.text or ""
     pt = None
@@ -205,7 +261,7 @@ def call_text_llm(prompt: str, model: str) -> LLMCallResult:
 
     Args:
         prompt: The full prompt string (e.g. built by ``build_rag_prompt``).
-        model: Model identifier (e.g. ``gemini-2.0-flash`` from
+        model: Model identifier (e.g. ``gemini-3.6-flash`` from
             ``settings.LLM_ANSWER_MODEL``).
 
     Returns:
@@ -227,9 +283,13 @@ def call_text_llm(prompt: str, model: str) -> LLMCallResult:
     client = genai.Client(api_key=api_key)
 
     try:
-        response = client.models.generate_content(model=model, contents=[prompt])
-    except Exception as exc:
-        raise RuntimeError(f"Gemini API call failed: {exc}") from exc
+        response = _generate_with_retries(
+            lambda contents: client.models.generate_content(model=model, contents=contents),
+            [prompt],
+            label="Gemini API call",
+        )
+    except RuntimeError:
+        raise
 
     text = response.text or ""
     pt = None
@@ -266,7 +326,7 @@ def call_text_llm_with_files(
     Args:
         prompt: The user's question (no chunk context, unlike RAG Mode).
         file_paths: Absolute paths to the original PDF file(s) on disk.
-        model: Model identifier (e.g. ``gemini-2.0-flash`` from
+        model: Model identifier (e.g. ``gemini-3.6-flash`` from
             ``settings.LLM_ANSWER_MODEL``).
 
     Returns:
@@ -305,9 +365,13 @@ def call_text_llm_with_files(
 
     # ── Send to LLM ──────────────────────────────────────────────────
     try:
-        response = client.models.generate_content(model=model, contents=contents)
-    except Exception as exc:
-        raise RuntimeError(f"Gemini API call (with files) failed: {exc}") from exc
+        response = _generate_with_retries(
+            lambda contents: client.models.generate_content(model=model, contents=contents),
+            contents,
+            label="Gemini API call (with files)",
+        )
+    except RuntimeError:
+        raise
 
     text = response.text or ""
     pt = None

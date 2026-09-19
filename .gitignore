@@ -13,3 +13,8 @@ prompt.txt
 docs/implementation_prompts.md
 
 .clinerules
+
+# Local tool installs (Ghostscript portable)
+tools/
+*.zip
+*.exe

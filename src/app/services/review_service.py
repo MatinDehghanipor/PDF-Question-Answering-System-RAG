@@ -26,6 +26,7 @@ from app.models.enums import (
 from app.models.page import Page
 from app.services.chunker import split_and_index_page
 from app.services.llm_service import trigger_llm_review
+from app.utils.pdf_utils import safe_unlink
 from app.services.vector_store import delete_chunks_for_document
 
 logger = logging.getLogger(__name__)
@@ -93,8 +94,7 @@ def discard_document(db: Session, document_id: int) -> None:
 
     storage_dir = Path(settings.FILE_STORAGE_PATH) / str(doc.user_id)
     pdf_path = storage_dir / f"{doc.id}.pdf"
-    if pdf_path.exists():
-        pdf_path.unlink()
+    safe_unlink(pdf_path)
     images_dir = storage_dir / "_images"
     if images_dir.exists():
         shutil.rmtree(images_dir, ignore_errors=True)

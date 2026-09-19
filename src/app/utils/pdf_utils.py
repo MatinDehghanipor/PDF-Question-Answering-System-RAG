@@ -22,7 +22,9 @@ extract text or parse PDF internals, do it in ``services/native_extractor.py``
     extraction logic.
 """
 
+import gc
 import logging
+import time
 from pathlib import Path
 
 import fitz  # PyMuPDF — used here ONLY for page_count (Phase-2 boundary)
@@ -33,6 +35,49 @@ logger = logging.getLogger(__name__)
 
 # PDF magic bytes as defined by ISO 32000-1
 PDF_MAGIC_BYTES = b"%PDF-"
+
+
+def safe_unlink(
+    path: Path,
+    *,
+    attempts: int = 5,
+    delay: float = 0.25,
+) -> bool:
+    """Delete *path*, tolerating transient Windows file locks (NFR-22).
+
+    Camelot 2.x (playa-pdf/pypdfium2 backends) can keep a read handle on a
+    PDF until the objects are garbage-collected, so an immediate ``unlink()``
+    right after ingestion may raise ``PermissionError`` on Windows.  This
+    helper retries a few times with a short delay, forcing a GC pass between
+    attempts to release third-party handles.
+
+    Args:
+        path: The file to delete.
+        attempts: Maximum number of unlink attempts.
+        delay: Seconds to sleep between attempts.
+
+    Returns:
+        True if the file was deleted (or already absent), False if it could
+        not be removed after all attempts (e.g. a hard external lock).
+    """
+    for attempt in range(attempts):
+        if not path.exists():
+            return True
+        try:
+            path.unlink()
+            return True
+        except PermissionError:
+            if attempt < attempts - 1:
+                gc.collect()  # release camelot/playa handles awaiting GC
+                time.sleep(delay)
+        except OSError as exc:
+            logger.warning("Could not delete '%s': %s", path, exc)
+            return False
+    logger.warning(
+        "File '%s' still locked after %d attempts — leaving it on disk.",
+        path, attempts,
+    )
+    return False
 
 
 class PdfValidationError(ValueError):

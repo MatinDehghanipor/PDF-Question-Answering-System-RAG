@@ -44,6 +44,7 @@ from app.utils.pdf_utils import (
     PdfProcessingError,
     PdfValidationError,
     ensure_storage_path,
+    safe_unlink,
     validate_pdf_file,
 )
 
@@ -293,14 +294,12 @@ def delete_document(
     delete_chunks_for_document(current_user.id, document_id)
 
     storage_path = ensure_storage_path(current_user.id, document_id)
-    if storage_path.exists():
-        try:
-            storage_path.unlink()
-            logger.info("Deleted PDF file at '%s'.", storage_path)
-        except OSError as exc:
-            logger.warning("Could not delete file '%s': %s", storage_path, exc)
-    else:
+    if not storage_path.exists():
         logger.warning("File '%s' for document %d was already missing.", storage_path, document_id)
+    elif safe_unlink(storage_path):
+        logger.info("Deleted PDF file at '%s'.", storage_path)
+    else:
+        logger.warning("Could not delete file '%s' (still locked).", storage_path)
 
     db.delete(doc)
     db.commit()
